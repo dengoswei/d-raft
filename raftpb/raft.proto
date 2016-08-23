@@ -1,0 +1,110 @@
+
+syntax = "proto2";
+
+package raft;
+
+enum ErrorCode {
+    OK = 0;
+    UNKOWN = -1;
+    UNCOMMITED_INDEX = 1;
+
+    INVALID_TERM = -99;
+    BUSY = -100;
+
+    INVALID_INDEX = -200;
+    BIG_BATCH = -201;
+
+    STORAGE_READ_ERROR = -300;
+    STORAGE_WRITE_ERROR = -310;
+
+    NOT_LEADER = -1000;
+    OCCUPY = -1100;
+}
+
+
+// mostly cpy from etc/raft/raftpb/raft.proto
+enum EntryType {
+	EntryNormal     = 0;
+	EntryConfChange = 1;
+}
+
+message Entry {
+	optional EntryType  type  = 1;
+	optional uint64     term  = 2;
+	optional uint64     index = 3;
+	optional bytes      data  = 4;
+    optional uint64     seq   = 5;
+    optional uint64     reqid = 6;
+}
+
+message SnapshotMetadata {
+	optional ConfState conf_state     = 1;
+    optional uint64    logid          = 2;
+	optional uint64    commited_index = 3;
+}
+
+message Snapshot {
+	optional bytes            data     = 1;
+	optional SnapshotMetadata metadata = 2;
+}
+
+enum MessageType {
+    MsgNull            = 0;
+	MsgHup             = 1;
+	MsgBeat            = 2;
+	MsgProp            = 3;
+	MsgApp             = 4;
+	MsgAppResp         = 5;
+	MsgVote            = 6;
+	MsgVoteResp        = 7;
+	MsgSnap            = 8;
+	MsgHeartbeat       = 9;
+	MsgHeartbeatResp   = 10;
+	MsgUnreachable     = 11;
+	MsgSnapStatus      = 12;
+
+    MsgInvalidTerm     = 13;
+}
+
+message Message {
+	optional MessageType type        = 1;
+	optional uint64      to          = 2;
+	optional uint64      from        = 3;
+	optional uint64      term        = 4;
+	optional uint64      log_term    = 5;
+	optional uint64      index       = 6;
+	repeated Entry       entries     = 7;
+	optional uint64      commit      = 8;
+	optional Snapshot    snapshot    = 9;
+	optional bool        reject      = 10;
+	optional uint64      reject_hint = 11;
+
+    optional uint64      logid       = 12;
+}
+
+message RaftState {
+	optional uint64 term   = 1;
+	optional uint64 vote   = 2;
+	optional uint64 commit = 3;
+    optional uint64 seq    = 4;
+}
+
+message ConfState {
+	repeated uint64 nodes = 1;
+}
+
+enum ConfChangeType {
+	ConfChangeAddNode    = 0;
+	ConfChangeRemoveNode = 1;
+	ConfChangeUpdateNode = 2;
+    ConfChangeAddCatchUpNode    = 3;
+    ConfChangeRemoveCatchUpNode = 4;
+}
+
+message ConfChange {
+	optional uint64          id       = 1;
+	optional ConfChangeType  type     = 2;
+	optional uint64          node_id  = 3;
+	optional bytes           context  = 4;
+}
+
