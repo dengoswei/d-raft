@@ -1,3 +1,7 @@
+#include "mem_utils.h"
+#include "log_utils.h"
+#include "time_utils.h"
+#include "replicate.h"
 #include "raft_mem.h"
 
 
@@ -25,8 +29,9 @@ public:
     }
 
     raft::RaftRole GetRole() const {
-        return nullptr == soft_state ? 
-            raft_mem_.GetRole() : soft_state->role();
+        return nullptr == soft_state_ ? 
+            raft_mem_.GetRole() : 
+            static_cast<raft::RaftRole>(soft_state_->role());
     }
 
     uint64_t GetTerm() const {
@@ -42,7 +47,7 @@ public:
         if (nullptr != hard_state_) {
             if (hard_state_->term() == msg_term && 
                     hard_state_->has_vote()) {
-                assert(0 == raft_mem_->GetVote(msg_term));
+                assert(0 == raft_mem_.GetVote(msg_term));
                 return hard_state_->vote();
             }
 
@@ -51,7 +56,7 @@ public:
         }
 
         assert(nullptr == hard_state_);
-        return raft_mem_->GetVote(msg_term);
+        return raft_mem_.GetVote(msg_term);
     }
 
     uint32_t GetLeaderId(uint64_t msg_term) const {
@@ -61,7 +66,7 @@ public:
             }
 
             assert(hard_state_->term() == msg_term);
-            return nullptr == soft_state ? 0 : soft_state->leader_id();
+            return nullptr == soft_state_ ? 0 : soft_state_->leader_id();
         }
 
         assert(nullptr == hard_state_);
@@ -137,7 +142,6 @@ public:
         }
 
         assert(1 < hs_min_index);
-        uint64_t rmem_min_index = raft_mem_.GetMinIndex();
         assert(0 < rmem_min_index);
         assert(rmem_min_index < hs_min_index);
         if (mem_idx < (hs_min_index - rmem_min_index)) {
@@ -154,15 +158,6 @@ public:
         }
 
         return &(hard_state_->entries(msg_idx));
-    }
-
-    uint64_t GetCommit() const {
-        if (nullptr != hard_state_ && hard_state_->has_commit()) {
-            assert(hard_state_->commit() >= raft_mem_.GetCommit());
-            return hard_state_->commit();
-        }
-
-        return raft_mem_.GetCommit();
     }
 
     bool CanUpdateCommit(
@@ -187,16 +182,16 @@ public:
         const raft::Entry* mem_entry = At(mem_idx);
         assert(nullptr != mem_entry);
         assert(mem_entry->index() == msg_commit_index);
-        if (msg_entry->term() != msg_commit_term) {
+        if (mem_entry->term() != msg_commit_term) {
             return false;
         }
 
         return true;
     }
 
-    bool UpdateVote(uint32_t candidate_id, bool vote_yes)
+    bool UpdateVote(uint64_t vote_term, uint32_t candidate_id, bool vote_yes)
     {
-        return raft_mem_.UpdateVote(candidate_id, vote_yes);
+        return raft_mem_.UpdateVote(vote_term, candidate_id, vote_yes);
     }
 
     bool CanWrite(int entries_size)
@@ -204,6 +199,15 @@ public:
         assert(0 <= entries_size);
         // TODO
         return true;
+    }
+
+    bool IsLogEmpty() const {
+        if (nullptr != hard_state_ && 
+                0 < hard_state_->entries_size()) {
+            return false;
+        }
+
+        return raft_mem_.IsLogEmpty();
     }
 
 private:
@@ -223,15 +227,15 @@ void updateHardState(
     }
 
     assert(nullptr != hard_state);
-    if (false == hard_state.has_term()) {
+    if (false == hard_state->has_term()) {
         hard_state->set_term(raft_mem.GetTerm());
     }
 
-    if (false == hard_state.has_vote()) {
+    if (false == hard_state->has_vote()) {
         hard_state->set_vote(raft_mem.GetVote(hard_state->term()));
     }
 
-    if (false == hard_state.has_commit()) {
+    if (false == hard_state->has_commit()) {
         hard_state->set_commit(raft_mem.GetCommit());
     }
 }
@@ -243,7 +247,7 @@ bool canVote(
         RaftState& raft_state, 
         uint64_t msg_term, 
         uint64_t vote_term, 
-        uint63_t vote_index)
+        uint64_t vote_index)
 {
     const auto term = raft_state.GetTerm();
     if (term != msg_term) {
@@ -408,6 +412,7 @@ onTimeout(raft::RaftMem& raft_mem)
             true, raft::MessageType::MsgVote);
 }
 
+// follower
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
@@ -422,7 +427,15 @@ onStepMessage(
     RaftState raft_state(raft_mem, hard_state, soft_state);
     assert(raft::RaftRole::FOLLOWER == raft_state.GetRole());
 
+    bool mark_update_active_time = false;
     auto term = raft_state.GetTerm();
+    if (msg.term() < term) {
+        // ignore;
+        return std::make_tuple(
+                std::move(hard_state), std::move(soft_state), 
+                false, raft::MessageType::MsgNull);
+    }
+
     assert(msg.term() >= term);
     if (msg.term() > term) {
         if (nullptr == soft_state) {
@@ -436,7 +449,7 @@ onStepMessage(
 
         if (nullptr == hard_state) {
             hard_state = cutils::make_unique<raft::HardState>();
-            asesrt(nullptr != hard_state);
+            assert(nullptr != hard_state);
         }
 
         assert(nullptr != hard_state);
@@ -537,7 +550,7 @@ onStepMessage(
                     assert(0 < entry.term());
                     assert(0 < entry.index());
 
-                    auto* new_entry = hard_state.add_entries();
+                    auto* new_entry = hard_state->add_entries();
                     assert(nullptr != new_entry);
                     *new_entry = entry;
                 }
@@ -602,6 +615,7 @@ onTimeout(raft::RaftMem& raft_mem)
             std::move(hard_state), nullptr, true, raft::MessageType::MsgVote);
 }
 
+// candicate
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
@@ -617,6 +631,12 @@ onStepMessage(
     assert(raft::RaftRole::CANDIDATE == raft_state.GetRole());
 
     uint64_t term = raft_state.GetTerm();
+    if (msg.term() < term) {
+        return std::make_tuple(
+                std::move(hard_state), std::move(soft_state), 
+                false, raft::MessageType::MsgVote);
+    }
+
     assert(msg.term() >= term);
     if (msg.term() > term ||
             (msg.term() == term && 
@@ -637,7 +657,7 @@ onStepMessage(
         {
             mark_update_active_time = true;
             if (false == raft_state.UpdateVote(
-                        msg.from(), !msg.reject())) {
+                        msg.term(), msg.from(), !msg.reject())) {
                 break;
             }
 
@@ -698,7 +718,7 @@ onTimeout(raft::RaftMem& raft_mem)
             true, raft::MessageType::MsgHeartbeat);
 }
 
-
+// leader
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
@@ -714,6 +734,12 @@ onStepMessage(
     assert(raft::RaftRole::LEADER == raft_state.GetRole());
 
     uint64_t term = raft_state.GetTerm();
+    if (msg.term() < term) {
+        return std::make_tuple(
+                std::move(hard_state), std::move(soft_state), 
+                false, raft::MessageType::MsgHeartbeat);
+    }
+
     assert(msg.term() >= term);
     if (msg.term() > term) {
         // revert back to follower
@@ -760,8 +786,8 @@ onStepMessage(
 
     case raft::MessageType::MsgAppResp:
         {
-            raft::ReplicateTracker* 
-                replicate = raft_mem.GetReplicateTracker();
+            raft::Replicate* 
+                replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
 
             if (replicate->UpdateReplicateState(
@@ -789,8 +815,8 @@ onStepMessage(
 
     case raft::MessageType::MsgHeartbeatResp:
         {
-            raft::ReplicateTracker* 
-                replicate = raft_mem.GetReplicateTracker();
+            raft::Replicate* 
+                replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
 
             if (replicate->UpdateReplicateState(
@@ -822,62 +848,21 @@ onStepMessage(
 
 namespace raft {
 
-
-std::tuple<
-    int, 
-    std::unique_ptr<raft::HardState>, 
-    std::unique_ptr<raft::SoftState>, 
-    std::unique_ptr<std::map<uint32_t, uint64_t>>, 
-    std::unique_ptr<raft::Message>>
-RaftMem::stepInvalidTerm(const raft::Message& msg)
-{
-    assert(msg.term() != term_); 
-
-    if (msg.term() > term_) {
-        // todo => become follower;
-    }
-
-    assert(msg.term() < term_);
-    // todo: rsp with valid term;
-}
-
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
     bool, 
     raft::MessageType>
-RaftMem::stepInvalidTerm(const raft::Message& msg)
-{
-    assert(msg.term() != term_);
-    logerr("INFO: term_ %" PRIu64 " msg.term %" PRIu64, 
-            term_, msg.term());
-    if (msg.term() < term_) {
-        return std::make_tuple(
-                nullptr, nullptr, false, 
-                raft::MessageType::MsgInvalidTerm);
-    }
-
-    assert(msg.term() > term_);
-    return follower::onStepMessage(*this, msg);
-}
-
-std::tuple<
-    std::unique_ptr<raft::HardState>, 
-    std::unique_ptr<raft::SoftState>, 
-    bool, 
-    raft::MessageType>
-RaftMem::Step(const raft::Message& msg)
+RaftMem::Step(
+        const raft::Message& msg, 
+        std::unique_ptr<raft::HardState> hard_state, 
+        std::unique_ptr<raft::SoftState> soft_state)
 {
     assert(msg.logid() == logid_);
     assert(msg.to() == selfid_);
 
-    // check term
-    if (msg.term() != term_) {
-        return stepInvalidTerm();
-    }
-
-    assert(msg.term() == term_);
-    return step_handler_(*this, msg);
+    assert(nullptr != step_handler_);
+    return step_handler_(*this, msg, std::move(hard_state), std::move(soft_state));
 }
 
 
@@ -887,7 +872,8 @@ void RaftMem::setRole(uint64_t next_term, uint32_t role)
             " role_ %u role %u", 
             term_, next_term, 
             static_cast<uint32_t>(role_), role);
-    role_ = role;
+    assert(next_term == term_);
+    role_ = static_cast<raft::RaftRole>(role);
     // TODO: update handler ...
 }
 
@@ -897,12 +883,18 @@ void RaftMem::updateLeaderId(uint64_t next_term, uint32_t leader_id)
             " leader_id_ %u leader_id %u", 
             term_, next_term, 
             leader_id_, leader_id);
+    assert(next_term == term_);
     leader_id_ = leader_id;
 }
 
 void RaftMem::updateTerm(uint64_t new_term)
 {
-    assert(term_ < new_term);
+    assert(term_ <= new_term);
+    if (term_ == new_term)
+    {
+        return ;
+    }
+
     logerr("INFO: term_ %" PRIu64 " vote_ %u new_term %" PRIu64, 
             term_, vote_, new_term);
     term_ = new_term;
@@ -923,10 +915,8 @@ std::deque<std::unique_ptr<Entry>>::iterator
 RaftMem::findLogEntry(uint64_t index)
 {
     auto ans = std::lower_bound(
-            logs_.begin(), logs_.end(), 
-            [](std::deque<std::unique_ptr<Entry>>::iterator iter, 
-                uint64_t index) {
-                const std::unique_ptr<Entry>& entry = *iter;
+            logs_.begin(), logs_.end(), index, 
+            [=](const std::unique_ptr<Entry>& entry, uint64_t index) {
                 assert(nullptr != entry);
                 return entry->index() < index;
             });
@@ -944,14 +934,14 @@ void RaftMem::appendLogEntries(std::unique_ptr<HardState> hard_state)
     assert(nullptr != hard_state);
     assert(0 < hard_state->entries_size());
 
-    uint64_t index = hard_state->entries(0)->index();
+    uint64_t index = hard_state->entries(0).index();
     assert(0 < index);
 
     // assert check
     for (int idx = 0; idx < hard_state->entries_size(); ++idx) {
         const auto& entry = hard_state->entries(idx);
-        assert(term_ >= entry->term());
-        assert(index + idx == entry->index());
+        assert(term_ >= entry.term());
+        assert(index + idx == entry.index());
     }
 
     auto inmem_iter = findLogEntry(index);
@@ -961,9 +951,9 @@ void RaftMem::appendLogEntries(std::unique_ptr<HardState> hard_state)
         const auto& entry = hard_state->entries(0);
         assert(nullptr != *inmem_iter);
         const auto& conflict_entry = *(*(inmem_iter));
-        assert(index == entry->index());
-        assert(index == conflict_entry->index());
-        assert(entry->term() != conflict_entry.term());
+        assert(index == entry.index());
+        assert(index == conflict_entry.index());
+        assert(entry.term() != conflict_entry.term());
         logerr("INFO: logs_.erase %d", 
                 static_cast<int>(std::distance(inmem_iter, logs_.end())));
         logs_.erase(inmem_iter, logs_.end());
@@ -972,8 +962,8 @@ void RaftMem::appendLogEntries(std::unique_ptr<HardState> hard_state)
     // append
     // TODO: config ?
     for (int idx = 0; idx < hard_state->entries_size(); ++idx) {
-        auto entry = mutable_entries(idx);
-        asesrt(nullptr != entry);
+        auto entry = hard_state->mutable_entries(idx);
+        assert(nullptr != entry);
 
         std::unique_ptr<raft::Entry> 
             new_entry = cutils::make_unique<raft::Entry>();
@@ -981,7 +971,7 @@ void RaftMem::appendLogEntries(std::unique_ptr<HardState> hard_state)
         new_entry->Swap(entry);
         assert(0 < new_entry->term());
         assert(0 < new_entry->index());
-        logs_.append(std::move(new_entry));
+        logs_.emplace_back(std::move(new_entry));
     }
 
     assert(false == logs_.empty());
@@ -1017,7 +1007,7 @@ void RaftMem::updateLogEntries(std::unique_ptr<HardState> hard_state)
 }
 
 void RaftMem::applyHardState(
-        std::unique_ptr<HardState> hard_state)
+        std::unique_ptr<raft::HardState> hard_state)
 {
     if (nullptr == hard_state) {
         return ;
@@ -1067,6 +1057,7 @@ void RaftMem::ApplyState(
 std::unique_ptr<raft::Message> 
 RaftMem::BuildRspMsg(
         const raft::Message& msg, 
+        bool mark_broadcast, 
         const raft::MessageType rsp_msg_type)
 {
     if (raft::MessageType::MsgNull == rsp_msg_type) {
@@ -1075,6 +1066,7 @@ RaftMem::BuildRspMsg(
 
     assert(raft::MessageType::MsgNull != rsp_msg_type);
     // TODO
+    return nullptr;
 }
 
 uint64_t RaftMem::GetMinIndex() const
@@ -1127,6 +1119,49 @@ bool RaftMem::HasTimeout() const
 {
     auto now = std::chrono::system_clock::now();
     return active_time_ + election_timeout_ < now;
+}
+
+uint32_t RaftMem::GetVote(uint64_t term) const 
+{
+    if (term_ != term) {
+        return 0;
+    }
+
+    assert(term_ == term);
+    return vote_;
+}
+
+uint32_t RaftMem::GetLeaderId(uint64_t term) const
+{
+    if (term_ != term) {
+        return 0;
+    }
+
+    assert(term_ == term);
+    return leader_id_;
+}
+
+const raft::Entry* RaftMem::GetLastEntry() const
+{
+    if (logs_.empty()) {
+        return nullptr;
+    }
+
+    assert(false == logs_.empty());
+    assert(nullptr != logs_.back());
+    return logs_.back().get();
+}
+
+
+bool RaftMem::UpdateVote(
+        uint64_t vote_term, uint32_t candidate_id, bool vote_yes)
+{
+
+}
+
+bool RaftMem::IsLogEmpty() const
+{
+    return logs_.empty();
 }
 
 } // namespace raft
