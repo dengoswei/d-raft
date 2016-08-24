@@ -105,7 +105,15 @@ uint64_t Replicate::GetRejectedIndex(uint32_t follower_id) const
         rejected_map_.at(follower_id) ? 0 : rejected_map_.at(follower_id);
 }
 
-
+void Replicate::Reset(uint64_t commit_index)
+{
+    rejected_map_.clear();
+    for (auto& id_idx_pair : accepted_map_) {
+        if (id_idx_pair.second > commit_index) {
+            id_idx_pair.second = commit_index;
+        }
+    }
+}
 
 } // namespace raft
 

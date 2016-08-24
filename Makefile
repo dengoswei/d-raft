@@ -1,6 +1,6 @@
 
 CPPFLAGS += -isystem $(GTEST_DIR)/include -std=c++11 -stdlib=libc++
-CXXFLAGS += -g -Wall -Wextra # -D TEST_DEBUG
+CXXFLAGS += -g -Wall -Wextra -D TEST_DEBUG
 
 TESTS = utils_test
 
@@ -26,7 +26,7 @@ clean :
 	rm -f $(TESTS) *.o raftpb/*.o raftpb/raft.pb.* test/*.o libdraft.a
 
 #raft.o raft_impl.o replicate_tracker.o raft_config.o craftpb/raft.pb.o 
-libdraft.a: raft_mem.o replicate.o
+libdraft.a: raft_mem.o raft_state.o replicate.o raftpb/raft.pb.o
 	$(ARSTATICLIB)
 
 %.pb.cc: raftpb/%.proto

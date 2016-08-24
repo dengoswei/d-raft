@@ -40,7 +40,7 @@ private:
                 std::unique_ptr<raft::HardState>, 
                 std::unique_ptr<raft::SoftState>, 
                 bool, 
-                raft::MessageType>(raft::RaftMem&)>;
+                raft::MessageType>(raft::RaftMem&, bool)>;
 
     // TODO
     using BuildRspHandler = 
@@ -75,15 +75,15 @@ public:
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>, 
         bool, raft::MessageType>
-            CheckTimeout();
+            CheckTimeout(bool force_timeout);
 
     // 0 ==
     void ApplyState(
-            std::unique_ptr<raft::HardState>& hard_state, 
-            std::unique_ptr<raft::SoftState>& soft_state);
+            std::unique_ptr<raft::HardState> hard_state, 
+            std::unique_ptr<raft::SoftState> soft_state);
 
     std::unique_ptr<raft::Message> BuildRspMsg(
-            const raft::Message& msg, 
+            const raft::Message& req_msg, 
             const std::unique_ptr<raft::HardState>& hard_state, 
             const std::unique_ptr<raft::SoftState>& soft_state, 
             bool mark_broadcast, 
@@ -93,6 +93,10 @@ public:
     
     uint32_t GetSelfId() const {
         return selfid_;
+    }
+
+    uint64_t GetLogId() const {
+        return logid_;
     }
 
     raft::RaftRole GetRole() const {

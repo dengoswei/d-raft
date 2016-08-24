@@ -28,6 +28,8 @@ public:
 
     uint64_t GetRejectedIndex(uint32_t follower_id) const;
 
+    void Reset(uint64_t commit_index);
+
 private:
     bool updateAcceptedMap(uint32_t follower_id, uint64_t next_log_index);
 
@@ -37,7 +39,6 @@ private:
 
     std::map<uint32_t, uint64_t> accepted_map_;
     std::map<uint32_t, uint64_t> rejected_map_;
-
 }; // class Replicate
 
 } // namespace raft
