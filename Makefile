@@ -26,7 +26,7 @@ clean :
 	rm -f $(TESTS) *.o raftpb/*.o raftpb/raft.pb.* test/*.o libdraft.a
 
 #raft.o raft_impl.o replicate_tracker.o raft_config.o craftpb/raft.pb.o 
-libdraft.a: raft_mem.o
+libdraft.a: raft_mem.o replicate.o
 	$(ARSTATICLIB)
 
 %.pb.cc: raftpb/%.proto

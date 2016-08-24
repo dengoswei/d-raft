@@ -163,6 +163,7 @@ public:
     bool CanUpdateCommit(
             uint64_t msg_commit_index, uint64_t msg_commit_term) const
     {
+        assert(raft::RaftRole::LEADER != GetRole());
         if (msg_commit_index <= commit_index_) {
             return false; // update nothing
         }
@@ -212,7 +213,30 @@ public:
 
     bool IsMatch(uint64_t log_index, uint64_t log_term) const
     {
-        // TODO
+        if (0 == log_index) {
+            assert(0 == log_term);
+            return true;
+        }
+
+        assert(0 < log_index);
+        uint64_t min_index = GetMinIndex();
+        assert(0 < min_index);
+        assert(min_index <= log_index);
+        assert(log_index <= GetMaxIndex());
+
+        int mem_idx = log_index - min_index;
+        assert(0 <= mem_idx);
+        const raft::Entry* mem_entry = At(mem_idx);
+        assert(nullptr != mem_entry);
+        assert(mem_entry->index() == log_index);
+        assert(0 < mem_entry->term());
+        return mem_entry->term() == log_term;
+    }
+
+    const std::set<uint32_t>& GetVoteFollowerSet() const {
+        // TODO: config change ???
+
+        return raft_mem_.GetVoteFollowerSet();
     }
 
 private:
@@ -319,6 +343,36 @@ uint64_t nextExploreIndex(
     assert(rejected_index <= raft_state.GetMaxIndex() + 1);
     assert(rejected_index > req_msg.index());
     return req_msg.index() + (rejected_index = req_msg.index()) / 2;
+}
+
+uint64_t calculateCommit(
+        const std::set<uint32_t>& vote_follower_set, 
+        const raft::Replicate* replicate)
+{
+    assert(nullptr != replicate);
+    assert(size_t{2} <= vote_follower_set.size()); // exclude self;
+
+    const size_t major_cnt = vote_follower_set.size() / 2 + 
+        0 == vote_follower_set.size() % 2 ? 0 : 1;
+
+    auto accepted_distribution = 
+        replicate->GetAcceptedDistributionOn(vote_follower_set);
+    size_t cnt = 0;
+    uint64_t commit_index = 0;
+    for (const auto& idx_cnt_pair : accepted_distribution) {
+        assert(0 < idx_cnt_pair.second);
+        if (cnt + idx_cnt_pair.second >= major_cnt) {
+            return commit_index;
+        }
+
+        cnt += idx_cnt_pair.second;
+        assert(cnt < major_cnt);
+        assert(commit_index < idx_cnt_pair.first);
+        commit_index = idx_cnt_pair.first;
+    }
+
+    // must be the case !!!
+    return 0;
 }
 
 namespace follower {
@@ -946,10 +1000,13 @@ onTimeout(raft::RaftMem& raft_mem)
     
     raft::Replicate* replicate = raft_mem.GetReplicate();
     assert(nullptr != replicate);
-    if (raft_mem.GetCommit() < replicate->GetCommit()) {
+    // TODO: for now
+    uint64_t replicate_commit = calculateCommit(
+            raft_mem.GetVoteFollowerSet(), replicate);
+    if (raft_mem.GetCommit() < replicate_commit) {
         hard_state = cutils::make_unique<raft::HardState>();
         assert(nullptr != hard_state);
-        hard_state->set_commit(replicate->GetCommit());
+        hard_state->set_commit(replicate_commit);
 
         updateHardState(raft_mem, hard_state);
     }
@@ -1044,7 +1101,9 @@ onStepMessage(
                 rsp_msg_type = raft::MessageType::MsgHeartbeat;
             }
 
-            if (raft_state.GetCommit() != replicate->GetCommit()) {
+            uint64_t replicate_commit = calculateCommit(
+                    raft_state.GetVoteFollowerSet(), replicate);
+            if (raft_state.GetCommit() < replicate_commit) {
                 // => update commit
                 if (nullptr == hard_state) {
                     hard_state = cutils::make_unique<raft::HardState>();
@@ -1052,7 +1111,7 @@ onStepMessage(
                 }
 
                 assert(nullptr != hard_state);
-                hard_state->set_commit(replicate->GetCommit());
+                hard_state->set_commit(replicate_commit);
                 if (raft::MessageType::MsgNull == rsp_msg_type) {
                     mark_broadcast = true;
                     rsp_msg_type = raft::MessageType::MsgHeartbeat;
@@ -1121,7 +1180,6 @@ onBuildRsp(
 
     switch (rsp_msg_type) {
     
-        // TODO
     case raft::MessageType::MsgApp:
         {
             if (mark_broadcast) {
@@ -1297,8 +1355,10 @@ RaftMem::RaftMem(
     map_build_rsp_handler_[raft::RaftRole::LEADER] = leader::onBuildRsp;
 
     replicate_ = cutils::make_unique<raft::Replicate>();
+    vote_follower_set_ = {1, 2, 3};
+    assert(vote_follower_set_.end() != vote_follower_set_.find(selfid_));
+    vote_follower_set_.erase(selfid_);
 }
-
 
 RaftMem::~RaftMem() = default;
 
@@ -1669,7 +1729,16 @@ bool RaftMem::IsMajority(int cnt) const
 {
     // TODO
     // assume 3 node
-    return cnt >= 2;
+    return cnt >= (vote_follower_set_.size() / 2 + 
+            ((0 == vote_follower_set_.size()) % 2 ? 0 : 1)) + 1;
+}
+
+const std::set<uint32_t>& RaftMem::GetVoteFollowerSet() const
+{
+    assert(false == vote_follower_set_.empty());
+    assert(size_t{2} <= vote_follower_set_.size());
+    assert(vote_follower_set_.end() == vote_follower_set_.find(selfid_));
+    return vote_follower_set_;
 }
 
 } // namespace raft

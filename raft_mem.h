@@ -140,6 +140,8 @@ public:
 
     bool IsMajority(int cnt) const;
 
+    const std::set<uint32_t>& GetVoteFollowerSet() const;
+
 private:
     void setRole(uint64_t next_term, uint32_t role);
 
@@ -183,6 +185,8 @@ private:
     
     std::map<uint32_t, uint64_t> vote_map_;
     std::unique_ptr<raft::Replicate> replicate_;
+
+    std::set<uint32_t> vote_follower_set_;
 }; // class RaftMem
 
 } // namespace raft
