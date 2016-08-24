@@ -42,8 +42,22 @@ private:
                 bool, 
                 raft::MessageType>(raft::RaftMem&)>;
 
+    // TODO
+    using BuildRspHandler = 
+        std::function<
+            std::unique_ptr<raft::Message>(
+                raft::RaftMem&, 
+                const raft::Message&, 
+                const std::unique_ptr<raft::HardState>&, 
+                const std::unique_ptr<raft::SoftState>&,
+                bool, 
+                const raft::MessageType)>;
+
 public:
-    RaftMem();
+    RaftMem(
+        uint64_t logid, 
+        uint32_t selfid, 
+        uint32_t election_timeout_ms);
 
     ~RaftMem();
 
@@ -57,16 +71,29 @@ public:
                 std::unique_ptr<raft::HardState> hard_state, 
                 std::unique_ptr<raft::SoftState> soft_state);
 
+    std::tuple<
+        std::unique_ptr<raft::HardState>, 
+        std::unique_ptr<raft::SoftState>, 
+        bool, raft::MessageType>
+            CheckTimeout();
+
     // 0 ==
     void ApplyState(
-            std::unique_ptr<raft::SoftState>& soft_state, 
-            std::unique_ptr<raft::HardState>& hard_state);
+            std::unique_ptr<raft::HardState>& hard_state, 
+            std::unique_ptr<raft::SoftState>& soft_state);
 
     std::unique_ptr<raft::Message> BuildRspMsg(
             const raft::Message& msg, 
-            bool mark_broadcast, raft::MessageType rsp_msg_type);
+            const std::unique_ptr<raft::HardState>& hard_state, 
+            const std::unique_ptr<raft::SoftState>& soft_state, 
+            bool mark_broadcast, 
+            raft::MessageType rsp_msg_type);
 
 public:
+    
+    uint32_t GetSelfId() const {
+        return selfid_;
+    }
 
     raft::RaftRole GetRole() const {
         return role_;
@@ -92,7 +119,7 @@ public:
 
     uint64_t GetMaxIndex() const;
 
-    bool UpdateVote(
+    int UpdateVote(
             uint64_t vote_term, uint32_t candidate_id, bool vote_yes);
 
     bool IsLogEmpty() const;
@@ -104,6 +131,14 @@ public:
     raft::Replicate* GetReplicate() {
         return replicate_.get();
     }
+
+    void ClearVoteMap();
+
+    int GetVoteCount() const {
+        return static_cast<int>(vote_map_.size());
+    }
+
+    bool IsMajority(int cnt) const;
 
 private:
     void setRole(uint64_t next_term, uint32_t role);
@@ -129,8 +164,9 @@ private:
 
     raft::RaftRole role_ = RaftRole::FOLLOWER;
 
-    TimeoutHandler timeout_handler_ = nullptr;
-    StepMessageHandler step_handler_ = nullptr;
+    std::map<raft::RaftRole, TimeoutHandler> map_timeout_handler_;
+    std::map<raft::RaftRole, StepMessageHandler> map_step_handler_;
+    std::map<raft::RaftRole, BuildRspHandler> map_build_rsp_handler_;
 
     uint32_t leader_id_ = 0; // soft state
 
@@ -145,6 +181,7 @@ private:
     std::chrono::time_point<std::chrono::system_clock> active_time_;
     // replicate state.. TODO
     
+    std::map<uint32_t, uint64_t> vote_map_;
     std::unique_ptr<raft::Replicate> replicate_;
 }; // class RaftMem
 

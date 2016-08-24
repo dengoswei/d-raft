@@ -15,8 +15,8 @@ class RaftState {
 public:
     RaftState(
             raft::RaftMem& raft_mem, 
-            std::unique_ptr<raft::HardState>& hard_state, 
-            std::unique_ptr<raft::SoftState>& soft_state)
+            const std::unique_ptr<raft::HardState>& hard_state, 
+            const std::unique_ptr<raft::SoftState>& soft_state)
         : raft_mem_(raft_mem)
         , hard_state_(hard_state)
         , soft_state_(soft_state)
@@ -210,10 +210,15 @@ public:
         return raft_mem_.IsLogEmpty();
     }
 
+    bool IsMatch(uint64_t log_index, uint64_t log_term) const
+    {
+        // TODO
+    }
+
 private:
     raft::RaftMem& raft_mem_;
-    std::unique_ptr<raft::HardState>& hard_state_;
-    std::unique_ptr<raft::SoftState>& soft_state_;
+    const std::unique_ptr<raft::HardState>& hard_state_;
+    const std::unique_ptr<raft::SoftState>& soft_state_;
 
     uint64_t commit_index_ = 0;
 }; // class RaftState
@@ -240,14 +245,89 @@ void updateHardState(
     }
 }
 
+int calculateMajorYesCount(
+        uint64_t vote_term, 
+        const std::map<uint32_t, uint64_t>& vote_map)
+{
+    int major_yes_cnt = 0;
+    for (const auto& vote_pair : vote_map) {
+        if (vote_pair.second == vote_term) {
+            ++major_yes_cnt;
+        }
+        else {
+            assert(0 == vote_pair.second);
+        }
+    }
+
+    return major_yes_cnt;
+}
+
+const raft::Entry* getLogEntry(
+        const RaftState& raft_state, uint64_t log_index)
+{
+    if (0 == log_index) {
+        return nullptr;
+    }
+
+    assert(0 < log_index);
+    assert(log_index <= raft_state.GetMaxIndex());
+    uint64_t min_index = raft_state.GetMinIndex();
+    assert(0 < min_index);
+    assert(log_index >= min_index);
+    int mem_idx = log_index - min_index;
+    assert(0 <= mem_idx);
+    const raft::Entry* mem_entry = raft_state.At(mem_idx);
+    assert(nullptr != mem_entry);
+    assert(mem_entry->index() == log_index);
+    assert(0 < mem_entry->term());
+    return mem_entry;
+}
+
+uint64_t getLogTerm(const RaftState& raft_state, uint64_t log_index)
+{
+    const raft::Entry* mem_entry = getLogEntry(raft_state, log_index);
+    if (nullptr == mem_entry) {
+        assert(0 == log_index);
+        return 0;
+    }
+
+    assert(mem_entry->index() == log_index);
+    assert(0 < mem_entry->term());
+    return mem_entry->term();
+}
+
+uint64_t nextExploreIndex(
+        const RaftState& raft_state, 
+        const raft::Replicate* replicate, 
+        const raft::Message& req_msg)
+{
+    assert(nullptr != replicate);
+    if (req_msg.reject()) {
+        uint64_t lower_index = 
+            std::max(
+                    replicate->GetAcceptedIndex(req_msg.from()), 
+                    raft_state.GetMinIndex());
+        assert(0 < lower_index);
+        assert(lower_index < req_msg.index() - 1);
+        return lower_index + (req_msg.index() - lower_index) / 2;
+    }
+
+    assert(false == req_msg.reject());
+    uint64_t rejected_index = 
+        replicate->GetRejectedIndex(req_msg.from());
+    assert(0 < rejected_index);
+    assert(rejected_index <= raft_state.GetMaxIndex() + 1);
+    assert(rejected_index > req_msg.index());
+    return req_msg.index() + (rejected_index = req_msg.index()) / 2;
+}
 
 namespace follower {
 
 bool canVote(
         RaftState& raft_state, 
         uint64_t msg_term, 
-        uint64_t vote_term, 
-        uint64_t vote_index)
+        uint64_t vote_index, 
+        uint64_t vote_term)
 {
     const auto term = raft_state.GetTerm();
     if (term != msg_term) {
@@ -391,6 +471,12 @@ onTimeout(raft::RaftMem& raft_mem)
 {
     // follower => timeout => become candidate;
     assert(raft::RaftRole::FOLLOWER == raft_mem.GetRole());
+    if (false == raft_mem.HasTimeout()) {
+        return std::make_tuple(
+                nullptr, nullptr, false, raft::MessageType::MsgNull);
+    }
+
+    // timeout =>
     std::unique_ptr<raft::HardState> 
         hard_state = cutils::make_unique<raft::HardState>();
     assert(nullptr != hard_state);
@@ -406,6 +492,7 @@ onTimeout(raft::RaftMem& raft_mem)
     hard_state->set_vote(0);
     updateHardState(raft_mem, hard_state);
 
+    raft_mem.ClearVoteMap();
     raft_mem.UpdateActiveTime();
     return std::make_tuple(
             std::move(hard_state), std::move(soft_state), 
@@ -469,9 +556,10 @@ onStepMessage(
     case raft::MessageType::MsgVote:
         {
             mark_update_active_time = true;
+            assert(0 < msg.index());
             if (false == canVote(
                         raft_state, 
-                        msg.term(), msg.log_term(), msg.index())) {
+                        msg.term(), msg.index() - 1, msg.log_term())) {
                 break;
             }
 
@@ -589,6 +677,72 @@ onStepMessage(
             false, rsp_msg_type);
 }
 
+std::unique_ptr<raft::Message>
+onBuildRsp(
+        raft::RaftMem& raft_mem, 
+        const raft::Message& req_msg, 
+        const std::unique_ptr<raft::HardState>& hard_state, 
+        const std::unique_ptr<raft::SoftState>& soft_state, 
+        bool mark_broadcast, 
+        const raft::MessageType rsp_msg_type)
+{
+    assert(false == mark_broadcast);
+    RaftState raft_state(raft_mem, hard_state, soft_state);    
+    assert(raft::RaftRole::FOLLOWER == raft_state.GetRole());
+
+    std::unique_ptr<raft::Message> 
+        rsp_msg = cutils::make_unique<raft::Message>();
+    assert(nullptr != rsp_msg);
+    switch (rsp_msg_type) {
+
+    case raft::MessageType::MsgVoteResp:
+        {
+            assert(nullptr != rsp_msg);
+            if (req_msg.term() != raft_state.GetTerm() ||
+                    req_msg.from() != raft_state.GetVote(req_msg.term())) {
+                rsp_msg->set_reject(true);
+                break; // 
+            }
+        
+            assert(req_msg.term() == raft_state.GetTerm());
+            assert(req_msg.from() == raft_state.GetVote(req_msg.term()));
+            rsp_msg->set_reject(false);
+        }
+        break;
+
+    case raft::MessageType::MsgAppResp:
+    case raft::MessageType::MsgHeartbeatResp:
+        {
+            if (raft_state.IsMatch(req_msg.index() - 1, req_msg.log_term())) {
+                rsp_msg->set_reject(false); 
+                rsp_msg->set_index(raft_state.GetMaxIndex() + 1);
+            }
+            else {
+                rsp_msg->set_reject(true);
+                rsp_msg->set_index(req_msg.index());
+            }
+        }
+        break;
+    
+    default: 
+        rsp_msg = nullptr;
+        logerr("IGNORE: req_msg.type %d rsp_msg_type %d", 
+                static_cast<int>(req_msg.type()), 
+                static_cast<int>(rsp_msg_type));
+        break;
+    }
+
+    if (nullptr != rsp_msg) {
+        rsp_msg->set_type(rsp_msg_type);
+        rsp_msg->set_logid(req_msg.logid());
+        rsp_msg->set_to(req_msg.from());
+        rsp_msg->set_from(req_msg.to());
+        rsp_msg->set_term(req_msg.term());
+    }
+
+    return std::move(rsp_msg);
+}
+
 } // namespace follower
 
 
@@ -602,6 +756,19 @@ std::tuple<
 onTimeout(raft::RaftMem& raft_mem)
 {
     assert(raft::RaftRole::CANDIDATE == raft_mem.GetRole());
+    if (false == raft_mem.HasTimeout()) {
+        return std::make_tuple(
+                nullptr, nullptr, false, raft::MessageType::MsgNull);
+    }
+
+    // timeout
+    int vote_cnt = raft_mem.GetVoteCount();
+    if (false == raft_mem.IsMajority(vote_cnt)) {
+        raft_mem.UpdateActiveTime();
+        return std::make_tuple(
+                nullptr, nullptr, true, raft::MessageType::MsgVote);
+    }
+
     std::unique_ptr<raft::HardState>
         hard_state = cutils::make_unique<raft::HardState>();
     assert(nullptr != hard_state);
@@ -656,9 +823,27 @@ onStepMessage(
     case raft::MessageType::MsgVoteResp:
         {
             mark_update_active_time = true;
-            if (false == raft_state.UpdateVote(
-                        msg.term(), msg.from(), !msg.reject())) {
-                break;
+            int major_yes_cnt = 
+                raft_mem.UpdateVote(msg.term(), msg.from(), !msg.reject());
+            if (false == raft_mem.IsMajority(major_yes_cnt)) {
+                // check local vote
+                if (0 >= major_yes_cnt || 
+                        0 != raft_state.GetVote(msg.term()) ||
+                        false == raft_mem.IsMajority(major_yes_cnt + 1)) {
+                    break; // 
+                }
+
+                assert(0 < major_yes_cnt);
+                assert(0 == raft_state.GetVote(msg.term()));
+                assert(true == raft_mem.IsMajority(major_yes_cnt + 1));
+
+                if (nullptr == hard_state) {
+                    hard_state = cutils::make_unique<raft::HardState>();
+                    assert(nullptr != hard_state);
+                }
+
+                // 
+                hard_state->set_vote(raft_mem.GetSelfId());
             }
 
             // => UpdateVote => yes => reach major
@@ -671,7 +856,7 @@ onStepMessage(
             soft_state->set_role(
                     static_cast<uint32_t>(raft::RaftRole::LEADER));
             // assert msg.to() == raft_mem.GetSelfID();
-            soft_state->set_leader_id(msg.to());
+            soft_state->set_leader_id(raft_mem.GetSelfId());
 
             // broad-cast: i am the new leader now!!
             mark_broadcast = true;
@@ -692,6 +877,58 @@ onStepMessage(
             nullptr, std::move(soft_state), mark_broadcast, rsp_msg_type);
 }
 
+std::unique_ptr<raft::Message>
+onBuildRsp(
+        raft::RaftMem& raft_mem, 
+        const raft::Message& req_msg, 
+        const std::unique_ptr<raft::HardState>& hard_state, 
+        const std::unique_ptr<raft::SoftState>& soft_state, 
+        bool mark_broadcast, 
+        const raft::MessageType rsp_msg_type)
+{
+    RaftState raft_state(raft_mem, hard_state, soft_state);
+    assert(raft::RaftRole::CANDIDATE == raft_state.GetRole());
+
+    std::unique_ptr<raft::Message>
+        rsp_msg = cutils::make_unique<raft::Message>();
+    assert(nullptr != rsp_msg);
+
+    switch (rsp_msg_type) {
+
+    case raft::MessageType::MsgVote:
+        {
+            rsp_msg->set_term(raft_state.GetTerm());
+            rsp_msg->set_index(raft_state.GetMaxIndex() + 1);
+            assert(0 < rsp_msg->index());
+            rsp_msg->set_log_term(
+                    getLogTerm(raft_state, rsp_msg->index() - 1));
+        }
+        break;
+
+    default:
+        rsp_msg = nullptr;
+        logerr("IGNORE: req_msg.type %d rsp_msg_type %d", 
+                static_cast<int>(req_msg.type()), 
+                static_cast<int>(rsp_msg_type));
+        break;
+    }
+
+    if (nullptr != rsp_msg) {
+        rsp_msg->set_type(rsp_msg_type);
+        rsp_msg->set_logid(req_msg.logid());
+        rsp_msg->set_from(req_msg.to());
+        if (mark_broadcast) {
+            rsp_msg->set_to(0);
+        }
+        else {
+            rsp_msg->set_to(req_msg.from());
+        }
+        assert(rsp_msg->has_term());
+    }
+
+    return std::move(rsp_msg);
+}
+
 } // namespace candidate
 
 
@@ -705,12 +942,17 @@ std::tuple<
 onTimeout(raft::RaftMem& raft_mem)
 {
     assert(raft::RaftRole::LEADER == raft_mem.GetRole());
-    std::unique_ptr<raft::HardState>
+    std::unique_ptr<raft::HardState> hard_state;
+    
+    raft::Replicate* replicate = raft_mem.GetReplicate();
+    assert(nullptr != replicate);
+    if (raft_mem.GetCommit() < replicate->GetCommit()) {
         hard_state = cutils::make_unique<raft::HardState>();
-    assert(nullptr != hard_state);
+        assert(nullptr != hard_state);
+        hard_state->set_commit(replicate->GetCommit());
 
-    hard_state->set_commit(raft_mem.GetCommit());
-    updateHardState(raft_mem, hard_state);
+        updateHardState(raft_mem, hard_state);
+    }
 
     raft_mem.UpdateActiveTime();
     return std::make_tuple(
@@ -793,6 +1035,12 @@ onStepMessage(
             if (replicate->UpdateReplicateState(
                         msg.from(), msg.reject(), msg.index())) {
                 mark_broadcast = false;
+                rsp_msg_type = raft::MessageType::MsgAppResp;
+            }
+
+            if (msg.reject()) {
+                // switch to MsgHeartbeat explore
+                assert(false == mark_broadcast);
                 rsp_msg_type = raft::MessageType::MsgHeartbeat;
             }
 
@@ -824,6 +1072,19 @@ onStepMessage(
                 mark_broadcast = false;
                 rsp_msg_type = raft::MessageType::MsgHeartbeat;
             }
+            else {
+                // msg heart-beat => update nothing
+                uint64_t accepted_index = 
+                    replicate->GetAcceptedIndex(msg.from());
+                uint64_t rejected_index = 
+                    replicate->GetRejectedIndex(msg.from());
+                // switch to MsgApp Catch-Up
+                if (accepted_index + 1 == rejected_index &&
+                        accepted_index < raft_state.GetMaxIndex()) {
+                    mark_broadcast = false;
+                    rsp_msg_type = raft::MessageType::MsgApp;
+                }
+            }
         }
         break;
 
@@ -841,12 +1102,205 @@ onStepMessage(
             mark_broadcast, rsp_msg_type);
 }
 
+// leader
+std::unique_ptr<raft::Message>
+onBuildRsp(
+        raft::RaftMem& raft_mem, 
+        const raft::Message& req_msg, 
+        const std::unique_ptr<raft::HardState>& hard_state, 
+        const std::unique_ptr<raft::SoftState>& soft_state, 
+        bool mark_broadcast, 
+        const raft::MessageType rsp_msg_type)
+{
+    RaftState raft_state(raft_mem, hard_state, soft_state);
+    assert(raft::RaftRole::LEADER == raft_state.GetRole());
+
+    std::unique_ptr<raft::Message>
+        rsp_msg = cutils::make_unique<raft::Message>();
+    assert(nullptr != rsp_msg);
+
+    switch (rsp_msg_type) {
+    
+        // TODO
+    case raft::MessageType::MsgApp:
+        {
+            if (mark_broadcast) {
+                assert(raft::MessageType::MsgProp == req_msg.type());
+                assert(0 < req_msg.entries_size());
+                {
+                    const raft::Entry& msg_entry = 
+                        req_msg.entries(req_msg.entries_size() - 1);
+                    assert(0 < msg_entry.index());
+                    assert(msg_entry.index() == raft_state.GetMaxIndex());
+                }
+
+                for (int idx = 0; idx < req_msg.entries_size(); ++idx) {
+                    raft::Entry* rsp_entry = rsp_msg->add_entries();
+                    assert(nullptr != rsp_entry);
+                    *rsp_entry = req_msg.entries(idx);
+                    assert(rsp_entry->term() == raft_state.GetTerm());
+                }
+
+                rsp_msg->set_index(req_msg.entries(0).index());
+                assert(0 < rsp_msg->index());
+                rsp_msg->set_log_term(
+                        getLogTerm(raft_state, rsp_msg->index() - 1));
+                rsp_msg->set_commit_index(raft_state.GetCommit());
+                rsp_msg->set_commit_term(
+                        getLogTerm(raft_state, rsp_msg->commit_index()));
+                break;
+            }
+
+            assert(false == mark_broadcast);
+            raft::Replicate* replicate = raft_mem.GetReplicate();
+            assert(nullptr != replicate);
+            assert(0 < req_msg.from());
+
+            if (req_msg.reject()) {
+                uint64_t next_explore_index = 
+                    nextExploreIndex(raft_state, replicate, req_msg);
+                assert(0 < next_explore_index);
+                assert(next_explore_index != req_msg.index());
+                rsp_msg->set_index(next_explore_index);
+                const raft::Entry* mem_entry = 
+                    getLogEntry(raft_state, rsp_msg->index() - 1);
+                if (nullptr != mem_entry) {
+                    assert(nullptr != mem_entry);
+                    assert(mem_entry->index() + 1 == rsp_msg->index());
+                    raft::Entry* rsp_entry = rsp_msg->add_entries();
+                    assert(nullptr != rsp_entry);
+                    *rsp_entry = *mem_entry;
+                    assert(1 == rsp_msg->entries_size());
+                }
+            }
+            else {
+                // assert false == reject
+                assert(req_msg.index() <= raft_state.GetMaxIndex() + 1);
+                rsp_msg->set_index(req_msg.index());
+                int max_size = std::min<int>(
+                        raft_state.GetMaxIndex() + 1 - req_msg.index(), 
+                        10); // TODO: for now
+                assert(0 <= max_size);
+                assert(req_msg.index() + max_size <= 
+                        raft_state.GetMaxIndex() + 1);
+                for (int idx = 0; idx < max_size; ++idx) {
+                    const raft::Entry* mem_entry = 
+                        getLogEntry(raft_state, rsp_msg->index() + idx);
+                    assert(nullptr != mem_entry);
+                    assert(mem_entry->index() == rsp_msg->index() + idx);
+                    raft::Entry* rsp_entry = rsp_msg->add_entries();
+                    *rsp_entry = *mem_entry;
+                }
+                assert(rsp_msg->entries_size() == max_size);
+            }
+
+            uint64_t rsp_max_index = rsp_msg->index() - 1;
+            if (0 < rsp_msg->entries_size()) {
+                rsp_max_index = rsp_msg->entries(
+                        rsp_msg->entries_size() - 1).index();
+                assert(0 < rsp_max_index);
+            }
+            assert(rsp_max_index >= rsp_msg->index() - 1);
+            rsp_msg->set_commit_index(
+                    std::min(rsp_max_index, raft_state.GetCommit()));
+            rsp_msg->set_commit_term(rsp_msg->commit_index());
+        }
+        break;
+
+    case raft::MessageType::MsgHeartbeat:
+        {
+            if (mark_broadcast) {
+                // 
+                rsp_msg->set_index(raft_state.GetMaxIndex() + 1);
+                assert(0 < rsp_msg->index());
+                rsp_msg->set_log_term(
+                        getLogTerm(raft_state, rsp_msg->index() - 1));
+
+                rsp_msg->set_commit_index(raft_state.GetCommit());
+                rsp_msg->set_commit_term(
+                        getLogTerm(raft_state, rsp_msg->commit_index()));
+                break;
+            }
+
+            assert(false == mark_broadcast);
+            assert(raft::MessageType::MsgHeartbeatResp == req_msg.type());
+            raft::Replicate* replicate = raft_mem.GetReplicate();
+            assert(nullptr != replicate);
+            assert(0 < req_msg.from());
+
+            uint64_t next_explore_index = 
+                nextExploreIndex(raft_state, replicate, req_msg);
+            assert(0 < next_explore_index);
+            assert(req_msg.index() != next_explore_index);
+            rsp_msg->set_index(next_explore_index);
+            assert(0 < rsp_msg->index());
+            rsp_msg->set_log_term(
+                    getLogTerm(raft_state, rsp_msg->index()));
+            if (rsp_msg->index() - 1 <= raft_state.GetCommit()) {
+                rsp_msg->set_commit_index(rsp_msg->index() - 1);
+                rsp_msg->set_commit_term(rsp_msg->log_term());
+            }
+        }
+        break;
+
+    default:
+        rsp_msg = nullptr;
+        logerr("IGNORE: req_msg.type %d rsp_msg_type %d", 
+                static_cast<int>(req_msg.type()), 
+                static_cast<int>(rsp_msg_type));
+        break;
+    }
+
+    if (nullptr != rsp_msg) {
+        rsp_msg->set_type(rsp_msg_type);
+        rsp_msg->set_logid(req_msg.logid());
+        rsp_msg->set_from(req_msg.to());
+        if (mark_broadcast) {
+            rsp_msg->set_to(0);
+        }
+        else {
+            rsp_msg->set_to(req_msg.from());
+        }
+
+        rsp_msg->set_term(raft_state.GetTerm());
+    }
+
+    return std::move(rsp_msg);
+}
+
 } // namespace leader
 
 } // namespace
 
 
 namespace raft {
+
+RaftMem::RaftMem(
+        uint64_t logid, 
+        uint32_t selfid, 
+        uint32_t election_timeout_ms)
+    : logid_(logid)
+    , selfid_(selfid)
+    , election_timeout_(election_timeout_ms)
+    , active_time_(std::chrono::system_clock::now())
+{
+    map_timeout_handler_[raft::RaftRole::FOLLOWER] = follower::onTimeout;
+    map_timeout_handler_[raft::RaftRole::CANDIDATE] = candidate::onTimeout;
+    map_timeout_handler_[raft::RaftRole::LEADER] = leader::onTimeout;
+
+    map_step_handler_[raft::RaftRole::FOLLOWER] = follower::onStepMessage;
+    map_step_handler_[raft::RaftRole::CANDIDATE] = candidate::onStepMessage;
+    map_step_handler_[raft::RaftRole::LEADER] = leader::onStepMessage;
+
+    map_build_rsp_handler_[raft::RaftRole::FOLLOWER] = follower::onBuildRsp;
+    map_build_rsp_handler_[raft::RaftRole::CANDIDATE] = candidate::onBuildRsp;
+    map_build_rsp_handler_[raft::RaftRole::LEADER] = leader::onBuildRsp;
+
+    replicate_ = cutils::make_unique<raft::Replicate>();
+}
+
+
+RaftMem::~RaftMem() = default;
 
 std::tuple<
     std::unique_ptr<raft::HardState>, 
@@ -861,10 +1315,30 @@ RaftMem::Step(
     assert(msg.logid() == logid_);
     assert(msg.to() == selfid_);
 
-    assert(nullptr != step_handler_);
-    return step_handler_(*this, msg, std::move(hard_state), std::move(soft_state));
+    auto role = raft::RaftRole::FOLLOWER;
+    {
+        RaftState raft_state(*this, hard_state, soft_state);
+        role = raft_state.GetRole();
+    }
+    assert(map_step_handler_.end() != map_step_handler_.find(role));
+    assert(nullptr != map_step_handler_.at(role));
+    return map_step_handler_.at(role)(
+            *this, msg, std::move(hard_state), std::move(soft_state));
+    // assert(nullptr != step_handler_);
+    // return step_handler_(*this, msg, std::move(hard_state), std::move(soft_state));
 }
 
+std::tuple<
+    std::unique_ptr<raft::HardState>, 
+    std::unique_ptr<raft::SoftState>, 
+    bool, 
+    raft::MessageType>
+RaftMem::CheckTimeout()
+{
+    assert(map_timeout_handler_.end() != map_timeout_handler_.find(role_));
+    assert(nullptr != map_timeout_handler_.at(role_));
+    return map_timeout_handler_.at(role_)(*this);
+}
 
 void RaftMem::setRole(uint64_t next_term, uint32_t role)
 {
@@ -874,7 +1348,6 @@ void RaftMem::setRole(uint64_t next_term, uint32_t role)
             static_cast<uint32_t>(role_), role);
     assert(next_term == term_);
     role_ = static_cast<raft::RaftRole>(role);
-    // TODO: update handler ...
 }
 
 void RaftMem::updateLeaderId(uint64_t next_term, uint32_t leader_id)
@@ -1027,8 +1500,8 @@ void RaftMem::applyHardState(
 }
 
 void RaftMem::ApplyState(
-        std::unique_ptr<raft::SoftState>& soft_state, 
-        std::unique_ptr<raft::HardState>& hard_state)
+        std::unique_ptr<raft::HardState>& hard_state, 
+        std::unique_ptr<raft::SoftState>& soft_state)
 {
     uint64_t next_term = 
         nullptr == hard_state ? term_ : hard_state->term();
@@ -1057,6 +1530,8 @@ void RaftMem::ApplyState(
 std::unique_ptr<raft::Message> 
 RaftMem::BuildRspMsg(
         const raft::Message& msg, 
+        const std::unique_ptr<raft::HardState>& hard_state, 
+        const std::unique_ptr<raft::SoftState>& soft_state, 
         bool mark_broadcast, 
         const raft::MessageType rsp_msg_type)
 {
@@ -1064,9 +1539,16 @@ RaftMem::BuildRspMsg(
         return nullptr; // nothing
     }
 
-    assert(raft::MessageType::MsgNull != rsp_msg_type);
-    // TODO
-    return nullptr;
+    auto role = raft::RaftRole::FOLLOWER;
+    {
+        RaftState raft_state(*this, hard_state, soft_state);
+        role = raft_state.GetRole();
+    }
+
+    assert(map_build_rsp_handler_.end() != map_build_rsp_handler_.find(role));
+    assert(nullptr != map_build_rsp_handler_.at(role));
+    return map_build_rsp_handler_.at(role)(
+            *this, msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
 }
 
 uint64_t RaftMem::GetMinIndex() const
@@ -1153,15 +1635,41 @@ const raft::Entry* RaftMem::GetLastEntry() const
 }
 
 
-bool RaftMem::UpdateVote(
+int RaftMem::UpdateVote(
         uint64_t vote_term, uint32_t candidate_id, bool vote_yes)
 {
+    if (vote_map_.end() != vote_map_.find(candidate_id)) {
+        if (vote_yes) {
+            assert(vote_term == vote_map_.at(candidate_id));
+        }
+        else {
+            assert(0 == vote_map_.at(candidate_id));
+        }
 
+        return calculateMajorYesCount(vote_term, vote_map_);
+    }
+
+    // else
+    vote_map_[candidate_id] = vote_yes ? vote_term : 0;
+    return calculateMajorYesCount(vote_term, vote_map_);
 }
 
 bool RaftMem::IsLogEmpty() const
 {
     return logs_.empty();
+}
+
+void RaftMem::ClearVoteMap()
+{
+    vote_map_.clear();
+}
+
+
+bool RaftMem::IsMajority(int cnt) const
+{
+    // TODO
+    // assume 3 node
+    return cnt >= 2;
 }
 
 } // namespace raft
