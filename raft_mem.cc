@@ -344,16 +344,7 @@ onStepMessage(
 
     assert(msg.term() >= term);
     if (msg.term() > term) {
-        if (nullptr == soft_state) {
-            soft_state = cutils::make_unique<raft::SoftState>();
-            assert(nullptr != soft_state);
-        }
-
-        assert(nullptr != soft_state);
-        soft_state->set_role(
-                static_cast<uint32_t>(raft::RaftRole::FOLLOWER));
-
-        if (nullptr == hard_state) {
+       if (nullptr == hard_state) {
             hard_state = cutils::make_unique<raft::HardState>();
             assert(nullptr != hard_state);
         }
@@ -519,8 +510,13 @@ onBuildRsp(
     case raft::MessageType::MsgVoteResp:
         {
             assert(nullptr != rsp_msg);
+            if (req_msg.from() == raft_state.GetLeaderId(req_msg.term())) {
+                assert(req_msg.term() == raft_state.GetTerm());
+                rsp_msg->set_reject(false);
+                break;
+            }
+
             if (req_msg.term() != raft_state.GetTerm() ||
-                    req_msg.from() != raft_state.GetLeaderId(req_msg.term()) ||
                     req_msg.from() != raft_state.GetVote(req_msg.term())) {
                 rsp_msg->set_reject(true);
                 break; // 
@@ -599,9 +595,11 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     hard_state->set_vote(0);
     updateHardState(raft_mem, hard_state);
 
+    raft_mem.ClearVoteMap();
     raft_mem.UpdateActiveTime();
     return std::make_tuple(
-            std::move(hard_state), nullptr, true, raft::MessageType::MsgVote);
+            std::move(hard_state), nullptr, 
+            true, raft::MessageType::MsgVote);
 }
 
 // candicate
@@ -1504,6 +1502,7 @@ bool RaftMem::IsLogEmpty() const
 void RaftMem::ClearVoteMap()
 {
     vote_map_.clear();
+    printf ( "TEST: vote_map_.size %zu\n", vote_map_.size() );
 }
 
 

@@ -248,9 +248,10 @@ TEST(ElectionTest, AllRejectElection)
             assert(nullptr != vote_rsp);
 
             std::tie(hard_state, 
-                    soft_state, mark_broadcast, rsp_msg_type) = raft_mem.Step(*vote_rsp, nullptr, nullptr);
+                    soft_state, 
+                    mark_broadcast, rsp_msg_type) = raft_mem.Step(*vote_rsp, nullptr, nullptr);
             assert(nullptr == hard_state);
-            assert(nullptr == hard_state);
+            assert(nullptr == soft_state);
             assert(false == mark_broadcast);
             assert(raft::MessageType::MsgNull == rsp_msg_type);
 
@@ -266,5 +267,105 @@ TEST(ElectionTest, AllRejectElection)
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
     assert(uint64_t{1} == raft_mem.GetTerm());
+}
+
+TEST(ElectionTest, StepTimeoutNothing)
+{
+    raft::RaftMem raft_mem(1, 1, 100);
+
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool mark_broadcast = false;
+    raft::MessageType rsp_msg_type = raft::MessageType::MsgNull;
+
+    {
+        std::tie(hard_state, 
+                soft_state, mark_broadcast, rsp_msg_type) = 
+            raft_mem.CheckTimeout(true);
+        raft_mem.ApplyState(
+                std::move(hard_state), std::move(soft_state));
+    }
+
+    {
+        auto vote_rsp = build_vote_rsp(raft_mem, 2, true);
+        assert(nullptr != vote_rsp);
+
+        std::tie(hard_state, 
+                soft_state, 
+                mark_broadcast, rsp_msg_type) = 
+            raft_mem.Step(*vote_rsp, nullptr, nullptr);
+        assert(nullptr == hard_state);
+        assert(nullptr == soft_state);
+        assert(false == mark_broadcast);
+        assert(raft::MessageType::MsgNull == rsp_msg_type);
+
+        raft_mem.ApplyState(nullptr, nullptr);
+    }
+
+    {
+        std::tie(hard_state, 
+                soft_state, mark_broadcast, rsp_msg_type) = 
+            raft_mem.CheckTimeout(true);
+        assert(nullptr == hard_state);
+        assert(nullptr == soft_state);
+        assert(true == mark_broadcast);
+        assert(raft::MessageType::MsgVote == rsp_msg_type);
+    }
+}
+
+TEST(ElectionTest, StepTimeoutAfterAllReject)
+{
+    raft::RaftMem raft_mem(1, 1, 100);
+
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool mark_broadcast = false;
+    raft::MessageType rsp_msg_type = raft::MessageType::MsgNull;
+
+    {
+        std::tie(hard_state, 
+                soft_state, mark_broadcast, rsp_msg_type) = 
+            raft_mem.CheckTimeout(true);
+        raft_mem.ApplyState(
+                std::move(hard_state), std::move(soft_state));
+        assert(0 == raft_mem.GetVoteCount());
+    }
+
+    {
+        for (uint32_t follower_id = 2; follower_id <= 3; ++follower_id) {
+            auto vote_rsp = build_vote_rsp(raft_mem, follower_id, true);
+            assert(nullptr != vote_rsp);
+
+            std::tie(hard_state, 
+                    soft_state, 
+                    mark_broadcast, rsp_msg_type) = 
+                raft_mem.Step(*vote_rsp, nullptr, nullptr);
+            assert(nullptr == hard_state);
+            assert(nullptr == soft_state);
+            assert(false == mark_broadcast);
+            assert(raft::MessageType::MsgNull == rsp_msg_type);
+
+            raft_mem.ApplyState(nullptr, nullptr);
+        }
+        assert(2 == raft_mem.GetVoteCount());
+    }
+
+    {
+        std::tie(hard_state, 
+                soft_state, mark_broadcast, rsp_msg_type) = 
+            raft_mem.CheckTimeout(true);
+        assert(nullptr != hard_state);
+        assert(nullptr == soft_state);
+        assert(true == mark_broadcast);
+        assert(raft::MessageType::MsgVote == rsp_msg_type);
+        assert(uint64_t{2} == hard_state->term());
+        assert(0 == hard_state->vote());
+
+        assert(0 == raft_mem.GetVoteCount());
+
+        raft_mem.ApplyState(
+                std::move(hard_state), nullptr);
+        assert(uint64_t{2} == raft_mem.GetTerm());
+    }
 }
 

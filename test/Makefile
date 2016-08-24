@@ -53,6 +53,9 @@ gtest_main.a : gtest-all.o gtest_main.o
 election_test: election_test.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
+follower_test: follower_test.o gtest_main.a ../libdraft.a
+	$(BUILDEXE)
+
 %.pb.cc: %.proto
 	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=../raftpb/ $<
 
