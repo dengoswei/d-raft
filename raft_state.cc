@@ -18,6 +18,8 @@ RaftState::RaftState(
         assert(commit_index_ <= hard_state_->commit());
         commit_index_ = hard_state->commit();
     }
+
+    assert(commit_index_ >= GetMinIndex() || uint64_t{1} == GetMinIndex());
 }
 
 raft::RaftRole RaftState::GetRole() const 
@@ -228,6 +230,12 @@ bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
     }
 
     assert(0 < min_index);
+    if (log_index < min_index) {
+        // must be the case !!
+        assert(log_term <= GetTerm());
+        return true;
+    }
+
     assert(min_index <= log_index);
     assert(log_index <= GetMaxIndex());
 

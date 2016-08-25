@@ -201,6 +201,12 @@ int resolveEntries(
         const raft::Message& msg)
 {
     assert(0 < msg.index());
+    if (0 == msg.entries_size()) {
+        logerr("INFO: msg.entries_size empty");
+        return -3;
+    }
+
+    assert(0 < msg.entries_size());
     const uint64_t min_index = raft_state.GetMinIndex();
     const uint64_t max_index = raft_state.GetMaxIndex();
     assert(min_index <= max_index);
@@ -220,21 +226,26 @@ int resolveEntries(
     }
 
     assert(0 < min_index);
-    if (msg.index() <= min_index || msg.index() > (max_index + 1)) {
+    uint64_t msg_min_index = msg.index();
+    uint64_t msg_max_index = msg.entries(msg.entries_size() - 1).index();
+    assert(msg_min_index <= msg_max_index);
+    if (msg_max_index < min_index || msg_min_index > max_index) {
         logerr("INFO: raft_mem %" PRIu64 " %" PRIu64 " "
-                " msg.index %" PRIu64, 
-                min_index, max_index, msg.index());
+                " msg.index %" PRIu64 " %" PRIu64, 
+                min_index, max_index, msg_min_index, msg_max_index);
         return -2;
     }
 
-    assert(msg.index() > min_index && msg.index() <= (max_index + 1));
     // else => intersect
     //      => check prev_index && prev_logterm
     {
         assert(uint64_t{1} <= msg.index());
         uint64_t check_index = msg.index() - 1;
-        if (0 == check_index) {
-            assert(0 == msg.log_term());
+        if (0 == check_index || min_index > check_index) {
+            if (0 == check_index) {
+                assert(0 == msg.log_term());
+            }
+            assert(msg.log_term() <= raft_state.GetTerm());
         }
         else {
             assert(0 < check_index);
@@ -246,6 +257,8 @@ int resolveEntries(
             assert(nullptr != mem_entry);
             assert(check_index == mem_entry->index());
             if (msg.log_term() != mem_entry->term()) {
+                // must be the case !
+                assert(mem_entry->index() > raft_state.GetCommit());
                 logerr("check_index %" PRIu64 " msg.log_term %" PRIu64 " "
                         "mem_entry->term %" PRIu64, 
                         check_index, msg.log_term(), mem_entry->term());
@@ -269,7 +282,12 @@ int resolveEntries(
 
         assert(nullptr != mem_entry);
         assert(mem_entry->index() == msg_entry.index());
+        printf ( "msg_entry.term %d mem_entry->term %d\n", 
+                static_cast<int>(msg_entry.term()), 
+                static_cast<int>(mem_entry->term()) );
         if (msg_entry.term() != mem_entry->term()) {
+            // must be the case
+            assert(mem_entry->index() > raft_state.GetCommit());
             logerr("IMPORTANT: index %" PRIu64 " find inconsist term "
                     "msg_entry.term %" PRIu64 " mem_entry->term %" PRIu64, 
                     msg_entry.index(), msg_entry.term(), mem_entry->term());
@@ -539,7 +557,14 @@ onBuildRsp(
             if (raft_state.IsMatch(
                         req_msg.index() - 1, req_msg.log_term())) {
                 rsp_msg->set_reject(false); 
-                rsp_msg->set_index(raft_state.GetMaxIndex() + 1);
+                uint64_t max_msg_index = (0 == req_msg.entries_size()) ? 
+                    req_msg.index() - 1 : 
+                    req_msg.entries(req_msg.entries_size() - 1).index();
+                printf ( "max_msg_index %d raft_state.GetCommit %d\n", 
+                        static_cast<int>(max_msg_index), 
+                        static_cast<int>(raft_state.GetCommit()));
+                rsp_msg->set_index(
+                        std::max(raft_state.GetCommit(), max_msg_index) + 1);
             }
             else {
                 rsp_msg->set_reject(true);
@@ -714,6 +739,7 @@ onStepMessage(
             mark_broadcast, rsp_msg_type);
 }
 
+// candidate
 std::unique_ptr<raft::Message>
 onBuildRsp(
         raft::RaftMem& raft_mem, 
