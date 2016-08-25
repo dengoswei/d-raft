@@ -3,7 +3,7 @@ CPPFLAGS += -isystem $(GTEST_DIR)/include -std=c++11 -stdlib=libc++
 CXXFLAGS += -g -Wall -Wextra -D TEST_DEBUG
 
 
-TESTS = election_test
+TESTS = election_test follower_test
 
 INCLS += -I../ -I../raftpb 
 INCLS += -I../../cutils
@@ -24,7 +24,7 @@ PROTOC = $(HOME)/project/bin/protoc
 all: $(TESTS)
 
 clean :
-	rm -f $(TESTS) gtest.a gtest_main.a *.o ../*.o ../raftpb/*.o 
+	rm -f $(TESTS) gtest.a gtest_main.a *.o 
 
 # Builds gtest.a and gtest_main.a.
 

@@ -141,6 +141,28 @@ uint64_t calculateCommit(
 
 namespace follower {
 
+bool canVoteYes(
+        raft::RaftState& raft_state, 
+        uint64_t msg_term, 
+        uint64_t vote_index, 
+        uint64_t vote_term)
+{
+    assert(raft_state.GetTerm() == msg_term);
+    if (raft_state.IsLogEmpty()) {
+        return true;
+    }
+
+    const raft::Entry* last_entry = raft_state.GetLastEntry();
+    assert(nullptr != last_entry);
+    assert(0 < last_entry->index());
+    if (last_entry->term() != vote_term) {
+        return vote_term > last_entry->term();
+    }
+
+    assert(last_entry->term() == vote_term);
+    return vote_index >= last_entry->index();
+}
+
 bool canVote(
         raft::RaftState& raft_state, 
         uint64_t msg_term, 
@@ -171,20 +193,7 @@ bool canVote(
     //    with the later term is more up-to-date;
     //  - If the logs end with the same term, then whichever log is longer
     //    is more up-to-date.
-    if (raft_state.IsLogEmpty()) {
-        return true;
-    }
-
-    // => else
-    const raft::Entry* last_entry = raft_state.GetLastEntry();
-    assert(nullptr != last_entry);
-    assert(0 < last_entry->index());
-    if (last_entry->term() != vote_term) {
-        return vote_term > last_entry->term();
-    }
-
-    assert(last_entry->term() == vote_term);
-    return vote_index >= last_entry->index();
+    return canVoteYes(raft_state, msg_term, vote_index, vote_term);
 }
 
 int resolveEntries(
@@ -339,7 +348,7 @@ onStepMessage(
         // ignore;
         return std::make_tuple(
                 std::move(hard_state), std::move(soft_state), 
-                false, raft::MessageType::MsgNull);
+                false, raft::MessageType::MsgInvalidTerm);
     }
 
     assert(msg.term() >= term);
@@ -394,13 +403,8 @@ onStepMessage(
                 if (nullptr == soft_state) {
                     soft_state = cutils::make_unique<raft::SoftState>();
                     assert(nullptr != soft_state);
-                    soft_state->set_role(
-                            static_cast<uint32_t>(
-                                raft::RaftRole::FOLLOWER));
                 }
                 assert(nullptr != soft_state);
-                assert(soft_state->role() == 
-                        static_cast<uint32_t>(raft::RaftRole::FOLLOWER));
                 soft_state->set_leader_id(msg.from());
             }
             else {
@@ -507,22 +511,23 @@ onBuildRsp(
     assert(nullptr != rsp_msg);
     switch (rsp_msg_type) {
 
+    case raft::MessageType::MsgInvalidTerm:
+        {
+            assert(req_msg.term() < raft_state.GetTerm());
+            rsp_msg->set_term(raft_state.GetTerm());
+        }
+        break;
+
     case raft::MessageType::MsgVoteResp:
         {
+            // ONLY VOTE_YES => MsgVoteResp
             assert(nullptr != rsp_msg);
-            if (req_msg.from() == raft_state.GetLeaderId(req_msg.term())) {
-                assert(req_msg.term() == raft_state.GetTerm());
-                rsp_msg->set_reject(false);
-                break;
-            }
-
-            if (req_msg.term() != raft_state.GetTerm() ||
-                    req_msg.from() != raft_state.GetVote(req_msg.term())) {
-                rsp_msg->set_reject(true);
-                break; // 
-            }
-        
             assert(req_msg.term() == raft_state.GetTerm());
+            // assert check
+            assert(canVoteYes(raft_state, 
+                        req_msg.term(), req_msg.index() - 1, 
+                        req_msg.log_term()));
+
             assert(req_msg.from() == raft_state.GetVote(req_msg.term()));
             rsp_msg->set_reject(false);
         }
@@ -531,7 +536,8 @@ onBuildRsp(
     case raft::MessageType::MsgAppResp:
     case raft::MessageType::MsgHeartbeatResp:
         {
-            if (raft_state.IsMatch(req_msg.index() - 1, req_msg.log_term())) {
+            if (raft_state.IsMatch(
+                        req_msg.index() - 1, req_msg.log_term())) {
                 rsp_msg->set_reject(false); 
                 rsp_msg->set_index(raft_state.GetMaxIndex() + 1);
             }
@@ -555,7 +561,9 @@ onBuildRsp(
         rsp_msg->set_logid(req_msg.logid());
         rsp_msg->set_to(req_msg.from());
         rsp_msg->set_from(req_msg.to());
-        rsp_msg->set_term(req_msg.term());
+        if (false == rsp_msg->has_term()) {
+            rsp_msg->set_term(req_msg.term());
+        }
     }
 
     return std::move(rsp_msg);

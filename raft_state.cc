@@ -22,9 +22,11 @@ RaftState::RaftState(
 
 raft::RaftRole RaftState::GetRole() const 
 {
-    return nullptr == soft_state_ ? 
-        raft_mem_.GetRole() : 
-        static_cast<raft::RaftRole>(soft_state_->role());
+    if (nullptr != soft_state_ && soft_state_->has_role()) {
+        return static_cast<raft::RaftRole>(soft_state_->role());
+    }
+    
+    return raft_mem_.GetRole();
 }
 
 uint64_t RaftState::GetTerm() const 
@@ -56,16 +58,14 @@ uint32_t RaftState::GetVote(uint64_t msg_term) const
 
 uint32_t RaftState::GetLeaderId(uint64_t msg_term) const 
 {
-    if (nullptr != hard_state_) {
-        if (hard_state_->term() != msg_term) {
-            return 0;
-        }
-
-        assert(hard_state_->term() == msg_term);
-        return nullptr == soft_state_ ? 0 : soft_state_->leader_id();
+    if (GetTerm() != msg_term) {
+        return 0;
     }
 
-    assert(nullptr == hard_state_);
+    if (nullptr != soft_state_ && soft_state_->has_leader_id()) {
+        return soft_state_->leader_id();
+    }
+
     return raft_mem_.GetLeaderId(msg_term);
 }
 
@@ -222,6 +222,11 @@ bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
 
     assert(0 < log_index);
     uint64_t min_index = GetMinIndex();
+    if (0 == min_index) {
+        assert(IsLogEmpty());
+        return false;
+    }
+
     assert(0 < min_index);
     assert(min_index <= log_index);
     assert(log_index <= GetMaxIndex());
