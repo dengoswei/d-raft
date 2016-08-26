@@ -2,120 +2,9 @@
 #include "raft_mem.h"
 #include "raft.pb.h"
 #include "mem_utils.h"
+#include "test_helper.h"
 
 namespace {
-
-std::unique_ptr<raft::RaftMem> 
-    build_raft_mem(
-            uint64_t term, uint64_t commit_index, raft::RaftRole role)
-{
-    std::unique_ptr<raft::RaftMem> raft_mem = 
-        cutils::make_unique<raft::RaftMem>(1, 1, 100);
-    assert(nullptr != raft_mem);
-
-    std::unique_ptr<raft::HardState> hard_state = 
-        cutils::make_unique<raft::HardState>();
-    assert(nullptr != hard_state);
-    hard_state->set_term(term);
-    hard_state->set_commit(commit_index);
-    hard_state->set_vote(0);
-    if (0 != commit_index) {
-        raft::Entry* entry = hard_state->add_entries();
-        assert(nullptr != entry);
-        entry->set_type(raft::EntryType::EntryNormal);
-        entry->set_term(term);
-        entry->set_index(commit_index);
-        entry->set_reqid(0);
-    }
-
-    std::unique_ptr<raft::SoftState> soft_state = 
-        cutils::make_unique<raft::SoftState>();
-    assert(nullptr != soft_state);
-    soft_state->set_role(static_cast<uint32_t>(role));
-
-    raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
-    assert(raft_mem->GetRole() == role);
-    assert(raft_mem->GetTerm() == term);
-    assert(raft_mem->GetCommit() == commit_index);
-    assert(raft_mem->GetMaxIndex() == commit_index);
-    assert(raft_mem->GetMinIndex() == commit_index);
-    return raft_mem;
-}
-
-std::unique_ptr<raft::Message> build_to_msg(
-        const raft::RaftMem& raft_mem, 
-        raft::MessageType msg_type, 
-        uint32_t follower_id)
-{
-    std::unique_ptr<raft::Message> msg =
-        cutils::make_unique<raft::Message>();
-    assert(nullptr != msg);
-
-    msg->set_type(msg_type);
-    msg->set_logid(raft_mem.GetLogId());
-    msg->set_term(raft_mem.GetTerm());
-    msg->set_to(follower_id);
-    msg->set_from(raft_mem.GetSelfId());
-    return msg;
-}
-
-std::unique_ptr<raft::Message> build_from_msg(
-        const raft::RaftMem& raft_mem, 
-        raft::MessageType msg_type, 
-        uint32_t follower_id)
-{
-    auto msg = cutils::make_unique<raft::Message>();
-    assert(nullptr != msg);
-
-    msg->set_type(msg_type);
-    msg->set_logid(raft_mem.GetLogId());
-    msg->set_term(raft_mem.GetTerm());
-    msg->set_to(raft_mem.GetSelfId());
-    msg->set_from(follower_id);
-    return msg;
-}
-
-void add_entries(
-        std::unique_ptr<raft::HardState>& hard_state, 
-        uint64_t term, 
-        uint64_t index)
-{
-    assert(nullptr != hard_state);
-    auto entry = hard_state->add_entries();
-    assert(nullptr != entry);
-    entry->set_type(raft::EntryType::EntryNormal);
-    entry->set_term(term);
-    entry->set_index(index);
-    entry->set_reqid(0);
-}
-
-void add_entries(
-        std::unique_ptr<raft::Message>& msg, 
-        uint64_t term, 
-        uint64_t index)
-{
-    assert(nullptr != msg);
-    auto entry = msg->add_entries();
-    assert(nullptr != entry);
-    entry->set_type(raft::EntryType::EntryNormal);
-    entry->set_term(term);
-    entry->set_index(index);
-    entry->set_reqid(0);
-}
-
-void update_term(
-        std::unique_ptr<raft::RaftMem>& raft_mem, 
-        uint64_t next_term)
-{
-    assert(nullptr != raft_mem);
-    assert(raft_mem->GetTerm() < next_term);
-
-    std::unique_ptr<raft::HardState>
-        hard_state = cutils::make_unique<raft::HardState>();
-    assert(nullptr != hard_state);
-    hard_state->set_term(next_term);
-    raft_mem->ApplyState(std::move(hard_state), nullptr);
-}
 
 } // namespace
 
@@ -619,5 +508,49 @@ TEST(FollowerTest, OutdateApp)
     assert(false == rsp_msg->reject());
     assert(rsp_msg->index() == raft_mem->GetCommit() + 1);
 }
+
+TEST(FollowerTest, FollowerToCandidate)
+{
+    auto raft_mem = build_raft_mem(1, 1, raft::RaftRole::FOLLOWER);
+    assert(nullptr != raft_mem);
+    assert(raft::RaftRole::FOLLOWER == raft_mem->GetRole());
+
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool mark_broadcast = false;
+    auto rsp_msg_type = raft::MessageType::MsgNull;
+
+    std::tie(hard_state, 
+            soft_state, mark_broadcast, rsp_msg_type) = 
+        raft_mem->CheckTimeout(true);
+    assert(nullptr != hard_state);
+    assert(nullptr != soft_state);
+    assert(true == mark_broadcast);
+    assert(raft::MessageType::MsgVote == rsp_msg_type);
+
+    assert(raft_mem->GetTerm() + 1 == hard_state->term());
+    assert(0 == hard_state->vote());
+    assert(0 == hard_state->entries_size());
+
+    assert(raft::RaftRole::CANDIDATE == 
+            static_cast<raft::RaftRole>(soft_state->role()));
+    assert(false == soft_state->has_leader_id());
+    
+    raft::Message fake_msg;
+    fake_msg.set_type(raft::MessageType::MsgNull);
+    fake_msg.set_logid(raft_mem->GetLogId());
+    fake_msg.set_to(raft_mem->GetSelfId());
+    fake_msg.set_term(hard_state->term());
+    auto rsp_msg = raft_mem->BuildRspMsg(
+            fake_msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
+    assert(nullptr != rsp_msg);
+    assert(rsp_msg_type == rsp_msg->type());
+    assert(raft_mem->GetTerm() + 1 == rsp_msg->term());
+    assert(raft_mem->GetSelfId() == rsp_msg->from());
+    assert(0 == rsp_msg->to());
+    assert(raft_mem->GetMaxIndex() + 1 == rsp_msg->index());
+    assert(rsp_msg->has_log_term());
+}
+
 
 

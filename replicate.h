@@ -30,6 +30,10 @@ public:
 
     void Reset(uint64_t commit_index);
 
+    uint64_t NextExploreIndex(
+            uint32_t follower_id, 
+            uint64_t min_index, uint64_t max_index) const;
+
 private:
     bool updateAcceptedMap(uint32_t follower_id, uint64_t next_log_index);
 

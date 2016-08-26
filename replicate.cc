@@ -1,5 +1,6 @@
 #include <cassert>
 #include "replicate.h"
+#include "log_utils.h"
 
 
 namespace raft {
@@ -40,6 +41,8 @@ bool Replicate::updateAcceptedMap(
 
     assert(new_accepted > prev_accepted);
     accepted_map_[follower_id] = new_accepted;
+    logerr("INFO: update accepted_map_ follower_id %u new_accepted %" PRIu64, 
+            follower_id, new_accepted);
     return true;
 }
 
@@ -61,9 +64,11 @@ bool Replicate::updateRejectedMap(
     if (new_rejected == prev_rejected) {
         return false; // update nothing
     }
-    
-    assert(new_rejected < prev_rejected);
+
+    assert(0 == prev_rejected | new_rejected < prev_rejected);
     rejected_map_[follower_id] = new_rejected;
+    logerr("INFO: update rejected_map_ follower_id %u new_rejected %" PRIu64, 
+            follower_id, new_rejected);
     return true;
 }
 
@@ -113,6 +118,60 @@ void Replicate::Reset(uint64_t commit_index)
             id_idx_pair.second = commit_index;
         }
     }
+}
+
+
+// only use for hb explore
+uint64_t Replicate::NextExploreIndex(
+        uint32_t follower_id, 
+        uint64_t min_index, uint64_t max_index) const
+{
+    assert(min_index <= max_index);
+    if (accepted_map_.end() == accepted_map_.find(follower_id)) {
+        printf ( "not in accepted_map\n" );
+        if (rejected_map_.end() == rejected_map_.find(follower_id)) {
+            // not in accepted_map_ && not in rejected_map_
+            return max_index + 1;
+        }
+
+        // only in rejected 
+        uint64_t rejected_index = rejected_map_.at(follower_id);
+        assert(0 < rejected_index);
+        if (rejected_index == min_index + 1) {
+            logerr("INFO follower_id %u rejected_index %" PRIu64 " "
+                    " min_index %" PRIu64, 
+                    follower_id, rejected_index, min_index);
+            return 0;
+        }
+
+        assert(min_index + 1 < rejected_index);
+        return (min_index + rejected_index) / 2 + 1;
+    }
+
+    printf ( "in accepted_map %d\n", static_cast<int>(accepted_map_.at(follower_id)) );
+    if (rejected_map_.end() == rejected_map_.find(follower_id) || 
+            rejected_map_.at(follower_id) == 
+                (accepted_map_.at(follower_id) + 1)) {
+        // no need explore..
+        return 0; // no need explore ?
+    }
+
+    if (rejected_map_.at(follower_id) <= accepted_map_.at(follower_id)) {
+        logerr("IMPORTANT: follower_id %u rejected_index %" PRIu64 " "
+                " accepted_index %" PRIu64, 
+                follower_id, rejected_map_.at(follower_id), 
+                accepted_map_.at(follower_id));
+        return 0; 
+    }
+
+    // both in accepted && rejected_
+    assert(rejected_map_.at(follower_id) > accepted_map_.at(follower_id) + 1);
+    uint64_t next_explore_index = (
+            accepted_map_.at(follower_id) + 
+            rejected_map_.at(follower_id)) / 2 + 1;
+    assert(next_explore_index > accepted_map_.at(follower_id) + 1);
+    assert(next_explore_index < rejected_map_.at(follower_id) + 1);
+    return next_explore_index;
 }
 
 } // namespace raft

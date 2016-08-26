@@ -130,3 +130,12 @@ void update_role(
     assert(raft_mem->GetRole() == role);
 }
 
+bool operator==(const raft::Entry&a, const raft::Entry& b)
+{
+    assert(a.type() == b.type());
+    assert(a.term() == b.term());
+    assert(a.index() == b.index());
+    assert(a.reqid() == b.reqid());
+    assert(a.data() == b.data());
+    return true;
+}

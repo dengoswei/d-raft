@@ -97,16 +97,25 @@ uint64_t nextExploreIndex(
                     raft_state.GetMinIndex());
         assert(0 < lower_index);
         assert(lower_index < req_msg.index() - 1);
+        printf ( "accepted_index %d lower_index %d\n", 
+                static_cast<int>(
+                    replicate->GetAcceptedIndex(req_msg.from())), 
+                static_cast<int>(lower_index) );
         return lower_index + (req_msg.index() - lower_index) / 2;
     }
 
     assert(false == req_msg.reject());
     uint64_t rejected_index = 
         replicate->GetRejectedIndex(req_msg.from());
+    printf ( "rejected_index %d\n", static_cast<int>(rejected_index) );
+    if (0 == rejected_index) {
+        return raft_state.GetMaxIndex() + 1;
+    }
+
     assert(0 < rejected_index);
     assert(rejected_index <= raft_state.GetMaxIndex() + 1);
     assert(rejected_index > req_msg.index());
-    return req_msg.index() + (rejected_index = req_msg.index()) / 2;
+    return req_msg.index() + (rejected_index - req_msg.index()) / 2;
 }
 
 uint64_t calculateCommit(
@@ -148,6 +157,15 @@ bool canVoteYes(
         uint64_t vote_term)
 {
     assert(raft_state.GetTerm() == msg_term);
+    // raft paper 
+    //  5.4.1 Election restriction
+    //  raft determines which of two logs is more up-to-date by
+    //  comparing the index and term of the last entries in the logs.
+    //  - If the logs have last entries with different terms, then the log
+    //    with the later term is more up-to-date;
+    //  - If the logs end with the same term, then whichever log is longer
+    //    is more up-to-date.
+
     if (raft_state.IsLogEmpty()) {
         return true;
     }
@@ -161,39 +179,6 @@ bool canVoteYes(
 
     assert(last_entry->term() == vote_term);
     return vote_index >= last_entry->index();
-}
-
-bool canVote(
-        raft::RaftState& raft_state, 
-        uint64_t msg_term, 
-        uint64_t vote_index, 
-        uint64_t vote_term)
-{
-    const auto term = raft_state.GetTerm();
-    if (term != msg_term) {
-        return term > msg_term;
-    }
-
-    assert(term == msg_term);
-    uint32_t vote = raft_state.GetVote(msg_term);
-    uint32_t leader_id = raft_state.GetLeaderId(msg_term);
-    if (0 != vote || 0 != leader_id) {
-        logerr("INFO: already vote term %" PRIu64 " vote %u leader_id %u", 
-                msg_term, vote, leader_id);
-        return false;
-    }
-
-    assert(0 == vote);
-    assert(0 == leader_id);
-    // raft paper 
-    //  5.4.1 Election restriction
-    //  raft determines which of two logs is more up-to-date by
-    //  comparing the index and term of the last entries in the logs.
-    //  - If the logs have last entries with different terms, then the log
-    //    with the later term is more up-to-date;
-    //  - If the logs end with the same term, then whichever log is longer
-    //    is more up-to-date.
-    return canVoteYes(raft_state, msg_term, vote_index, vote_term);
 }
 
 int resolveEntries(
@@ -332,7 +317,6 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     assert(nullptr != soft_state);
 
     soft_state->set_role(static_cast<uint32_t>(raft::RaftRole::CANDIDATE));
-    soft_state->set_leader_id(0);
 
     hard_state->set_term(raft_mem.GetTerm() + 1);
     hard_state->set_vote(0);
@@ -394,21 +378,34 @@ onStepMessage(
         {
             mark_update_active_time = true;
             assert(0 < msg.index());
-            if (false == canVote(
-                        raft_state, 
-                        msg.term(), msg.index() - 1, msg.log_term())) {
+            if (false == canVoteYes(
+                        raft_state, msg.term(), 
+                        msg.index() - 1, msg.log_term())) {
                 break;
             }
 
-            if (nullptr == hard_state) {
-                hard_state = cutils::make_unique<raft::HardState>();
-                assert(nullptr != hard_state);
+            rsp_msg_type = raft::MessageType::MsgVoteResp;
+            uint32_t vote = raft_state.GetVote(msg.term());
+            uint32_t leader_id = raft_state.GetLeaderId(msg.term());
+            if (0 != leader_id || 
+                    (0 != vote && msg.from() != vote)) {
+                logerr("INFO: already vote term %" PRIu64 " "
+                        " vote %u leader_id %u", 
+                        msg.term(), vote, leader_id);
+                break;
             }
 
-            hard_state->set_term(msg.term());
-            hard_state->set_vote(msg.from());
+            assert(0 == leader_id);
+            assert(0 == vote || msg.from() == vote);
+            if (0 == vote) {
+                if (nullptr == hard_state) {
+                    hard_state = cutils::make_unique<raft::HardState>();
+                    assert(nullptr != hard_state);
+                }
 
-            rsp_msg_type = raft::MessageType::MsgVoteResp;
+                hard_state->set_term(msg.term());
+                hard_state->set_vote(msg.from());
+            }
         }
         break;
 
@@ -546,8 +543,13 @@ onBuildRsp(
                         req_msg.term(), req_msg.index() - 1, 
                         req_msg.log_term()));
 
-            assert(req_msg.from() == raft_state.GetVote(req_msg.term()));
-            rsp_msg->set_reject(false);
+            assert(0 == raft_state.GetLeaderId(req_msg.term()));
+            if (req_msg.from() == raft_state.GetVote(req_msg.term())) {
+                rsp_msg->set_reject(false);
+            }
+            else {
+                rsp_msg->set_reject(true);
+            }
         }
         break;
 
@@ -569,6 +571,8 @@ onBuildRsp(
             else {
                 rsp_msg->set_reject(true);
                 rsp_msg->set_index(req_msg.index());
+                printf ( "do not match: req_msg.index %d\n", 
+                        static_cast<int>(req_msg.index()) );
             }
         }
         break;
@@ -662,6 +666,14 @@ onStepMessage(
             (msg.term() == term && 
              raft::MessageType::MsgHeartbeat == msg.type())) {
         // fall back to follower state;
+        if (nullptr == soft_state) {
+            soft_state = cutils::make_unique<raft::SoftState>();
+            assert(nullptr != soft_state);
+        }
+
+        assert(nullptr != soft_state);
+        soft_state->set_role(
+                static_cast<uint32_t>(raft::RaftRole::FOLLOWER));
         return follower::onStepMessage(
                 raft_mem, msg, 
                 std::move(hard_state), std::move(soft_state));
@@ -722,6 +734,7 @@ onStepMessage(
         break;
 
     default:
+        assert(raft::MessageType::MsgHeartbeat != msg.type());
         logerr("IGNORE: recv msg type %d", static_cast<int>(msg.type()));
         break;
     }
@@ -851,6 +864,14 @@ onStepMessage(
     assert(msg.term() >= term);
     if (msg.term() > term) {
         // revert back to follower
+        if (nullptr == soft_state) {
+            soft_state = cutils::make_unique<raft::SoftState>();
+            assert(nullptr != soft_state);
+        }
+
+        assert(nullptr != soft_state);
+        soft_state->set_role(
+                static_cast<uint32_t>(raft::RaftRole::FOLLOWER));
         return follower::onStepMessage(
                 raft_mem, msg, 
                 std::move(hard_state), std::move(soft_state));
@@ -899,9 +920,11 @@ onStepMessage(
             assert(nullptr != replicate);
 
             if (replicate->UpdateReplicateState(
-                        msg.from(), msg.reject(), msg.index())) {
+                        msg.from(), !msg.reject(), msg.index())) {
+                printf ( "follower_id %u msg.index %d reject %d\n", 
+                        msg.from(), static_cast<int>(msg.index()), msg.reject() );
                 mark_broadcast = false;
-                rsp_msg_type = raft::MessageType::MsgAppResp;
+                rsp_msg_type = raft::MessageType::MsgApp;
             }
 
             if (msg.reject()) {
@@ -910,6 +933,7 @@ onStepMessage(
                 rsp_msg_type = raft::MessageType::MsgHeartbeat;
             }
 
+            // TOOD: FIX
             uint64_t replicate_commit = calculateCommit(
                     raft_state.GetVoteFollowerSet(), replicate);
             if (raft_state.GetCommit() < replicate_commit) {
@@ -935,9 +959,24 @@ onStepMessage(
                 replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
 
+            mark_broadcast = false;
             if (replicate->UpdateReplicateState(
-                        msg.from(), msg.reject(), msg.index())) {
-                mark_broadcast = false;
+                        msg.from(), !msg.reject(), msg.index())) {
+                auto next_explore_index = 
+                    replicate->NextExploreIndex(
+                            msg.from(), 
+                            raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                if (0 == next_explore_index) {
+                    logerr("INFO: follower_id %u no need explore "
+                            "req_msg.index %" PRIu64 
+                            " min %" PRIu64 " max %" PRIu64, 
+                            msg.from(), msg.index(), 
+                            raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                    // do nothing;
+                    break;
+                }
+                assert(0 < next_explore_index);
+                assert(next_explore_index != msg.index());
                 rsp_msg_type = raft::MessageType::MsgHeartbeat;
             }
             else {
@@ -949,7 +988,6 @@ onStepMessage(
                 // switch to MsgApp Catch-Up
                 if (accepted_index + 1 == rejected_index &&
                         accepted_index < raft_state.GetMaxIndex()) {
-                    mark_broadcast = false;
                     rsp_msg_type = raft::MessageType::MsgApp;
                 }
             }
@@ -1090,19 +1128,21 @@ onBuildRsp(
             }
 
             assert(false == mark_broadcast);
-            assert(raft::MessageType::MsgHeartbeatResp == req_msg.type());
             raft::Replicate* replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
             assert(0 < req_msg.from());
 
-            uint64_t next_explore_index = 
-                nextExploreIndex(raft_state, replicate, req_msg);
+            auto next_explore_index = 
+                replicate->NextExploreIndex(
+                        req_msg.from(), raft_state.GetMinIndex(), raft_state.GetMaxIndex());
             assert(0 < next_explore_index);
+            assert(raft_state.GetMinIndex() < next_explore_index);
+            assert(next_explore_index <= raft_state.GetMaxIndex() + 1);
+
             assert(req_msg.index() != next_explore_index);
             rsp_msg->set_index(next_explore_index);
-            assert(0 < rsp_msg->index());
             rsp_msg->set_log_term(
-                    getLogTerm(raft_state, rsp_msg->index()));
+                    getLogTerm(raft_state, rsp_msg->index() - 1));
             if (rsp_msg->index() - 1 <= raft_state.GetCommit()) {
                 rsp_msg->set_commit_index(rsp_msg->index() - 1);
                 rsp_msg->set_commit_term(rsp_msg->log_term());

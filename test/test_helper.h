@@ -40,4 +40,4 @@ void update_role(
         std::unique_ptr<raft::RaftMem>& raft_mem, 
         raft::RaftRole role);
 
-
+bool operator==(const raft::Entry& a, const raft::Entry& b);

@@ -3,7 +3,7 @@ CPPFLAGS += -isystem $(GTEST_DIR)/include -std=c++11 -stdlib=libc++
 CXXFLAGS += -g -Wall -Wextra -D TEST_DEBUG
 
 
-TESTS = election_test follower_test
+TESTS = election_test follower_test candidate_test
 
 INCLS += -I../ -I../raftpb 
 INCLS += -I../../cutils
@@ -53,7 +53,13 @@ gtest_main.a : gtest-all.o gtest_main.o
 election_test: election_test.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
-follower_test: follower_test.o gtest_main.a ../libdraft.a
+follower_test: follower_test.o test_helper.o gtest_main.a ../libdraft.a
+	$(BUILDEXE)
+
+candidate_test: candidate_test.o test_helper.o gtest_main.a ../libdraft.a
+	$(BUILDEXE)
+
+leader_test: leader_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
 %.pb.cc: %.proto
