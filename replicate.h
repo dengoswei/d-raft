@@ -34,6 +34,10 @@ public:
             uint32_t follower_id, 
             uint64_t min_index, uint64_t max_index) const;
 
+    uint64_t NextCatchUpIndex(
+            uint32_t follower_id, 
+            uint64_t min_index, uint64_t max_index) const; 
+
 private:
     bool updateAcceptedMap(uint32_t follower_id, uint64_t next_log_index);
 

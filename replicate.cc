@@ -127,8 +127,12 @@ uint64_t Replicate::NextExploreIndex(
         uint64_t min_index, uint64_t max_index) const
 {
     assert(min_index <= max_index);
+    if (0 == min_index) {
+        return 0; // no need explore
+    }
+
+    assert(0 < min_index);
     if (accepted_map_.end() == accepted_map_.find(follower_id)) {
-        printf ( "not in accepted_map\n" );
         if (rejected_map_.end() == rejected_map_.find(follower_id)) {
             // not in accepted_map_ && not in rejected_map_
             return max_index + 1;
@@ -148,30 +152,78 @@ uint64_t Replicate::NextExploreIndex(
         return (min_index + rejected_index) / 2 + 1;
     }
 
-    printf ( "in accepted_map %d\n", static_cast<int>(accepted_map_.at(follower_id)) );
+    uint64_t accepted_index = std::max(accepted_map_.at(follower_id), min_index);
     if (rejected_map_.end() == rejected_map_.find(follower_id) || 
-            rejected_map_.at(follower_id) == 
-                (accepted_map_.at(follower_id) + 1)) {
+            rejected_map_.at(follower_id) == accepted_index + 1) {
         // no need explore..
         return 0; // no need explore ?
     }
 
-    if (rejected_map_.at(follower_id) <= accepted_map_.at(follower_id)) {
+    if (rejected_map_.at(follower_id) <= accepted_index) {
         logerr("IMPORTANT: follower_id %u rejected_index %" PRIu64 " "
-                " accepted_index %" PRIu64, 
+                " accepted_index %" PRIu64 " accepted_map_ %" PRIu64, 
                 follower_id, rejected_map_.at(follower_id), 
-                accepted_map_.at(follower_id));
+                accepted_index, accepted_map_.at(follower_id));
         return 0; 
     }
 
     // both in accepted && rejected_
-    assert(rejected_map_.at(follower_id) > accepted_map_.at(follower_id) + 1);
+    assert(rejected_map_.at(follower_id) > accepted_index + 1);
     uint64_t next_explore_index = (
-            accepted_map_.at(follower_id) + 
-            rejected_map_.at(follower_id)) / 2 + 1;
-    assert(next_explore_index > accepted_map_.at(follower_id) + 1);
+            accepted_index + rejected_map_.at(follower_id)) / 2 + 1;
+    assert(next_explore_index > accepted_index + 1);
     assert(next_explore_index < rejected_map_.at(follower_id) + 1);
     return next_explore_index;
+}
+
+uint64_t Replicate::NextCatchUpIndex(
+        uint32_t follower_id, 
+        uint64_t min_index, uint64_t max_index) const
+{
+    assert(min_index <= max_index);
+    if (0 == min_index) {
+        return 0; // no need catchup
+    }
+
+    assert(0 < min_index);
+    auto next_explore_index = 
+        NextExploreIndex(follower_id, min_index, max_index);
+    if (0 < next_explore_index) {
+        return 0; // need explore first;
+    }
+
+    // else =>
+    assert(0 == next_explore_index);
+    if (accepted_map_.end() == accepted_map_.find(follower_id)) {
+        // no info in accepted_map_ yet;
+        if (rejected_map_.end() != rejected_map_.find(follower_id) &&
+                min_index >= rejected_map_.at(follower_id)) {
+            logerr("IMPORTANT CATCH-UP HUP follower_id %u min_index %" 
+                    PRIu64 " rejected_index %" PRIu64, 
+                    follower_id, min_index, rejected_map_.at(follower_id));
+            return 0;
+        }
+
+        return min_index;  // must be the case;
+    }
+
+    assert(accepted_map_.end() != accepted_map_.find(follower_id));
+    if (accepted_map_.at(follower_id) < min_index) {
+        logerr("IMPORTANT CATCH-UP HUP follower_id %u min_index %" PRIu64 " "
+                "accepted_index %" PRIu64, 
+                follower_id, min_index, accepted_map_.at(follower_id));
+        return 0;
+    }
+
+    assert(accepted_map_.at(follower_id) >= min_index);
+    if (accepted_map_.at(follower_id) == max_index) {
+        logerr("CATCH-UP STOP follower_id %u at max_index %" PRIu64, 
+                follower_id, max_index);
+        return 0; // no need catch-up
+    }
+
+    assert(accepted_map_.at(follower_id) < max_index);
+    return accepted_map_.at(follower_id) + 1;
 }
 
 } // namespace raft

@@ -919,18 +919,42 @@ onStepMessage(
                 replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
 
+            mark_broadcast = false;
+            uint64_t next_catchup_index = 0;
             if (replicate->UpdateReplicateState(
                         msg.from(), !msg.reject(), msg.index())) {
                 printf ( "follower_id %u msg.index %d reject %d\n", 
                         msg.from(), static_cast<int>(msg.index()), msg.reject() );
-                mark_broadcast = false;
-                rsp_msg_type = raft::MessageType::MsgApp;
+                next_catchup_index = replicate->NextCatchUpIndex(
+                        msg.from(), 
+                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                if (0 == next_catchup_index) {
+                    logerr("INFO: follower_id %u CatchUp Stop at %" PRIu64, 
+                            msg.from(), msg.index());
+                }
+                else {
+                    rsp_msg_type = raft::MessageType::MsgApp;
+                }
             }
 
-            if (msg.reject()) {
-                // switch to MsgHeartbeat explore
-                assert(false == mark_broadcast);
+            if (0 == next_catchup_index && msg.reject()) {
+                assert(raft::MessageType::MsgNull == rsp_msg_type);
+                // try to switch to MsgHeartbeat explore
+                auto next_explore_index = 
+                    replicate->NextExploreIndex(
+                        msg.from(), 
+                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                if (0 == next_explore_index) {
+                    logerr("INFO: follower_id %u no need explore "
+                            "index %" PRIu64, 
+                            msg.from(), msg.index());
+                    break;
+                }
+                
+                assert(0 < next_explore_index);
                 rsp_msg_type = raft::MessageType::MsgHeartbeat;
+                logerr("INFO: follower_id %u switch CATCH-UP TO EXPLORE", 
+                        msg.from());
             }
 
             // TOOD: FIX
@@ -945,10 +969,6 @@ onStepMessage(
 
                 assert(nullptr != hard_state);
                 hard_state->set_commit(replicate_commit);
-                if (raft::MessageType::MsgNull == rsp_msg_type) {
-                    mark_broadcast = true;
-                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                }
             }
         }
         break;
@@ -966,31 +986,27 @@ onStepMessage(
                     replicate->NextExploreIndex(
                             msg.from(), 
                             raft_state.GetMinIndex(), raft_state.GetMaxIndex());
-                if (0 == next_explore_index) {
-                    logerr("INFO: follower_id %u no need explore "
-                            "req_msg.index %" PRIu64 
-                            " min %" PRIu64 " max %" PRIu64, 
-                            msg.from(), msg.index(), 
-                            raft_state.GetMinIndex(), raft_state.GetMaxIndex());
-                    // do nothing;
+                if (0 != next_explore_index) {
+                    assert(next_explore_index != msg.index());
+                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
                     break;
                 }
-                assert(0 < next_explore_index);
-                assert(next_explore_index != msg.index());
-                rsp_msg_type = raft::MessageType::MsgHeartbeat;
             }
-            else {
-                // msg heart-beat => update nothing
-                uint64_t accepted_index = 
-                    replicate->GetAcceptedIndex(msg.from());
-                uint64_t rejected_index = 
-                    replicate->GetRejectedIndex(msg.from());
-                // switch to MsgApp Catch-Up
-                if (accepted_index + 1 == rejected_index &&
-                        accepted_index < raft_state.GetMaxIndex()) {
-                    rsp_msg_type = raft::MessageType::MsgApp;
-                }
+
+            auto next_catchup_index = replicate->NextCatchUpIndex(
+                    msg.from(), 
+                    raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+            if (0 == next_catchup_index) {
+                // do nothing
+                logerr("INFO: EXPLORE STOP follower_id %u msg.index %" PRIu64, 
+                        msg.from(), msg.index());
+                break;
             }
+
+            assert(0 < next_catchup_index);
+            rsp_msg_type = raft::MessageType::MsgApp;
+            logerr("INFO: follower_id %u switch EXPLORE TO CATCH-UP", 
+                    msg.from());
         }
         break;
 
@@ -1061,43 +1077,32 @@ onBuildRsp(
             assert(nullptr != replicate);
             assert(0 < req_msg.from());
 
-            if (req_msg.reject()) {
-                uint64_t next_explore_index = 
-                    nextExploreIndex(raft_state, replicate, req_msg);
-                assert(0 < next_explore_index);
-                assert(next_explore_index != req_msg.index());
-                rsp_msg->set_index(next_explore_index);
+            auto next_catchup_index = 
+                replicate->NextCatchUpIndex(
+                        req_msg.from(), 
+                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+            assert(0 < next_catchup_index);
+            if (false == req_msg.reject()) {
+                assert(next_catchup_index >= req_msg.index());
+                assert(next_catchup_index < raft_state.GetMaxIndex() + 1);
+            }
+
+            rsp_msg->set_index(next_catchup_index);
+            int max_size = std::min<int>(
+                    raft_state.GetMaxIndex() + 1 - next_catchup_index, 
+                    10);
+            assert(0 < max_size);
+            assert(next_catchup_index + 
+                    max_size <= raft_state.GetMaxIndex() + 1);
+            for (int idx = 0; idx < max_size; ++idx) {
                 const raft::Entry* mem_entry = 
-                    getLogEntry(raft_state, rsp_msg->index() - 1);
-                if (nullptr != mem_entry) {
-                    assert(nullptr != mem_entry);
-                    assert(mem_entry->index() + 1 == rsp_msg->index());
-                    raft::Entry* rsp_entry = rsp_msg->add_entries();
-                    assert(nullptr != rsp_entry);
-                    *rsp_entry = *mem_entry;
-                    assert(1 == rsp_msg->entries_size());
-                }
+                    getLogEntry(raft_state, rsp_msg->index() + idx);
+                assert(nullptr != mem_entry);
+                assert(mem_entry->index() == rsp_msg->index() + idx);
+                raft::Entry* rsp_entry = rsp_msg->add_entries();
+                *rsp_entry = *mem_entry;
             }
-            else {
-                // assert false == reject
-                assert(req_msg.index() <= raft_state.GetMaxIndex() + 1);
-                rsp_msg->set_index(req_msg.index());
-                int max_size = std::min<int>(
-                        raft_state.GetMaxIndex() + 1 - req_msg.index(), 
-                        10); // TODO: for now
-                assert(0 <= max_size);
-                assert(req_msg.index() + max_size <= 
-                        raft_state.GetMaxIndex() + 1);
-                for (int idx = 0; idx < max_size; ++idx) {
-                    const raft::Entry* mem_entry = 
-                        getLogEntry(raft_state, rsp_msg->index() + idx);
-                    assert(nullptr != mem_entry);
-                    assert(mem_entry->index() == rsp_msg->index() + idx);
-                    raft::Entry* rsp_entry = rsp_msg->add_entries();
-                    *rsp_entry = *mem_entry;
-                }
-                assert(rsp_msg->entries_size() == max_size);
-            }
+            assert(rsp_msg->entries_size() == max_size);
 
             uint64_t rsp_max_index = rsp_msg->index() - 1;
             if (0 < rsp_msg->entries_size()) {
@@ -1233,8 +1238,6 @@ RaftMem::Step(
     assert(nullptr != map_step_handler_.at(role));
     return map_step_handler_.at(role)(
             *this, msg, std::move(hard_state), std::move(soft_state));
-    // assert(nullptr != step_handler_);
-    // return step_handler_(*this, msg, std::move(hard_state), std::move(soft_state));
 }
 
 std::tuple<
