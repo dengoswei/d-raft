@@ -132,6 +132,11 @@ uint64_t Replicate::NextExploreIndex(
     }
 
     assert(0 < min_index);
+    if (min_index == max_index) {
+        // no need explore
+        return 0;
+    }
+
     if (accepted_map_.end() == accepted_map_.find(follower_id)) {
         if (rejected_map_.end() == rejected_map_.find(follower_id)) {
             // not in accepted_map_ && not in rejected_map_
