@@ -28,7 +28,7 @@ public:
 
     uint64_t GetRejectedIndex(uint32_t follower_id) const;
 
-    void Reset(uint64_t commit_index);
+    void Fix(uint64_t fix_index);
 
     uint64_t NextExploreIndex(
             uint32_t follower_id, 

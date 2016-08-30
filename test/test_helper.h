@@ -5,6 +5,11 @@
 #include "mem_utils.h"
 
 
+std::unique_ptr<raft::RaftMem>
+build_raft_mem(
+        uint32_t id, 
+        uint64_t term, uint64_t commit_index, raft::RaftRole role);
+
 std::unique_ptr<raft::RaftMem> 
     build_raft_mem(
             uint64_t term, uint64_t commit_index, raft::RaftRole role);
@@ -41,3 +46,19 @@ void update_role(
         raft::RaftRole role);
 
 bool operator==(const raft::Entry& a, const raft::Entry& b);
+
+
+std::unique_ptr<raft::Message>
+trigger_timeout(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft,
+        uint32_t id);
+
+std::unique_ptr<raft::Message>
+apply_msg(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
+        const raft::Message& msg);
+
+void loop_until(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
+        const std::vector<std::unique_ptr<raft::Message>>& vecMsg);
+

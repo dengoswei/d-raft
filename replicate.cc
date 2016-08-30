@@ -110,13 +110,21 @@ uint64_t Replicate::GetRejectedIndex(uint32_t follower_id) const
         rejected_map_.at(follower_id) ? 0 : rejected_map_.at(follower_id);
 }
 
-void Replicate::Reset(uint64_t commit_index)
+void Replicate::Fix(uint64_t fix_index)
 {
-    rejected_map_.clear();
+    std::set<uint32_t> erase_set;
     for (auto& id_idx_pair : accepted_map_) {
-        if (id_idx_pair.second > commit_index) {
-            id_idx_pair.second = commit_index;
+        if (id_idx_pair.second > fix_index) {
+            id_idx_pair.second = fix_index;
         }
+
+        if (0 == id_idx_pair.second) {
+            erase_set.insert(id_idx_pair.first);
+        }
+    }
+
+    for (auto id : erase_set) {
+        accepted_map_.erase(id);
     }
 }
 

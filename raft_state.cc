@@ -254,6 +254,10 @@ const std::set<uint32_t>& RaftState::GetVoteFollowerSet() const {
     return raft_mem_.GetVoteFollowerSet();
 }
 
+raft::Replicate* RaftState::GetReplicate() 
+{
+    return raft_mem_.GetReplicate();
+}
 
 } // namespace raft;
 

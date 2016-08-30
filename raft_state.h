@@ -55,6 +55,8 @@ public:
 
     const std::set<uint32_t>& GetVoteFollowerSet() const;
 
+    raft::Replicate* GetReplicate();
+
 private:
     raft::RaftMem& raft_mem_;
     const std::unique_ptr<raft::HardState>& hard_state_;

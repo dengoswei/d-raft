@@ -275,7 +275,11 @@ int resolveEntries(
             assert(mem_entry->index() > raft_state.GetCommit());
             logerr("IMPORTANT: index %" PRIu64 " find inconsist term "
                     "msg_entry.term %" PRIu64 " mem_entry->term %" PRIu64, 
-                    msg_entry.index(), msg_entry.term(), mem_entry->term());
+                    msg_entry.index(), msg_entry.term(), 
+                    mem_entry->term());
+            auto replicate = raft_state.GetReplicate();
+            assert(nullptr != replicate);
+            replicate->Fix(mem_entry->index() - 1);
             // truncate local log
             break;
         }
@@ -725,7 +729,6 @@ onStepMessage(
 
             raft::Replicate* replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
-            replicate->Reset(raft_state.GetCommit());
 
             // broad-cast: i am the new leader now!!
             mark_broadcast = true;
@@ -1080,7 +1083,8 @@ onBuildRsp(
             auto next_catchup_index = 
                 replicate->NextCatchUpIndex(
                         req_msg.from(), 
-                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                        raft_state.GetMinIndex(), 
+                        raft_state.GetMaxIndex());
             assert(0 < next_catchup_index);
             if (false == req_msg.reject()) {
                 assert(next_catchup_index >= req_msg.index());
@@ -1094,6 +1098,7 @@ onBuildRsp(
             assert(0 < max_size);
             assert(next_catchup_index + 
                     max_size <= raft_state.GetMaxIndex() + 1);
+            auto commit_index = raft_state.GetCommit();
             for (int idx = 0; idx < max_size; ++idx) {
                 const raft::Entry* mem_entry = 
                     getLogEntry(raft_state, rsp_msg->index() + idx);
@@ -1101,19 +1106,19 @@ onBuildRsp(
                 assert(mem_entry->index() == rsp_msg->index() + idx);
                 raft::Entry* rsp_entry = rsp_msg->add_entries();
                 *rsp_entry = *mem_entry;
+                if (mem_entry->index() <= commit_index) {
+                    rsp_msg->set_commit_index(mem_entry->index());
+                    rsp_msg->set_commit_term(mem_entry->term());
+                }
             }
-            assert(rsp_msg->entries_size() == max_size);
 
-            uint64_t rsp_max_index = rsp_msg->index() - 1;
-            if (0 < rsp_msg->entries_size()) {
-                rsp_max_index = rsp_msg->entries(
-                        rsp_msg->entries_size() - 1).index();
-                assert(0 < rsp_max_index);
+            assert(rsp_msg->entries_size() == max_size);
+            if (false == rsp_msg->has_commit_index()) {
+                assert(false == rsp_msg->has_commit_term());
+                rsp_msg->set_commit_index(commit_index);
+                rsp_msg->set_commit_term(
+                        getLogTerm(raft_state, rsp_msg->commit_index()));
             }
-            assert(rsp_max_index >= rsp_msg->index() - 1);
-            rsp_msg->set_commit_index(
-                    std::min(rsp_max_index, raft_state.GetCommit()));
-            rsp_msg->set_commit_term(rsp_msg->commit_index());
         }
         break;
 
@@ -1209,6 +1214,8 @@ RaftMem::RaftMem(
     map_build_rsp_handler_[raft::RaftRole::LEADER] = leader::onBuildRsp;
 
     replicate_ = cutils::make_unique<raft::Replicate>();
+    assert(nullptr != replicate_);
+
     vote_follower_set_ = {1, 2, 3};
     assert(vote_follower_set_.end() != vote_follower_set_.find(selfid_));
     vote_follower_set_.erase(selfid_);
@@ -1603,6 +1610,69 @@ const std::set<uint32_t>& RaftMem::GetVoteFollowerSet() const
     assert(vote_follower_set_.end() == vote_follower_set_.find(selfid_));
     return vote_follower_set_;
 }
+
+int RaftMem::Init(
+        const raft::HardState& hard_state)
+{
+    assert(0 == leader_id_);
+    assert(0 == term_);
+    assert(0 == vote_);
+    assert(0 == commit_);
+    assert(true == logs_.empty());
+    assert(true == vote_map_.empty());
+    assert(false == vote_follower_set_.empty());
+
+    auto new_hard_state = cutils::make_unique<raft::HardState>();
+    *new_hard_state = hard_state;
+    ApplyState(std::move(new_hard_state), nullptr);
+    assert(raft::RaftRole::FOLLOWER == GetRole());
+    UpdateActiveTime(); 
+    return 0;
+}
+
+std::tuple<
+std::unique_ptr<raft::HardState>, 
+std::unique_ptr<raft::SoftState>, 
+bool, 
+raft::MessageType>
+RaftMem::SetValue(
+        const std::vector<std::string>& vecValue, 
+        const std::vector<uint64_t>& vecRequestID)
+{
+    if (vecValue.empty()) {
+        return std::make_tuple(
+                nullptr, nullptr, false, raft::MessageType::MsgNull);
+    }
+
+    assert(vecValue.size() == vecRequestID.size());
+
+    raft::Message prop_msg;
+    prop_msg.set_type(raft::MessageType::MsgProp);
+    prop_msg.set_logid(logid_);
+    prop_msg.set_to(selfid_);
+    prop_msg.set_from(0);
+    prop_msg.set_term(GetTerm());
+    uint64_t max_index = GetMaxIndex();
+    prop_msg.set_index(max_index + 1);
+    prop_msg.set_log_term(
+            logs_.empty() ? 0 : logs_.back()->term());
+    for (size_t idx = 0; idx < vecValue.size(); ++idx) {
+        auto new_entry = prop_msg.add_entries();
+        assert(nullptr == new_entry);
+        new_entry->set_type(raft::EntryType::EntryNormal);
+        new_entry->set_term(prop_msg.term());
+        new_entry->set_index(prop_msg.index() + idx);
+        new_entry->set_reqid(vecRequestID[idx]);
+        new_entry->set_data(vecValue[idx]);
+    }
+
+    assert(static_cast<
+            size_t>(prop_msg.entries_size()) == vecValue.size());
+    // TODO: add limit ??
+
+    return Step(prop_msg, nullptr, nullptr);
+}
+
 
 } // namespace raft
 

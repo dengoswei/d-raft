@@ -61,6 +61,19 @@ public:
 
     ~RaftMem();
 
+    int Init(const raft::HardState& hard_state);
+
+
+    std::tuple<
+        std::unique_ptr<raft::HardState>, 
+        std::unique_ptr<raft::SoftState>, 
+        bool, raft::MessageType>
+            SetValue(
+                    const std::vector<std::string>& vecValue, 
+                    const std::vector<uint64_t>& vecRequestID);
+
+
+
     // bool for broad-cast
     std::tuple<
         std::unique_ptr<raft::HardState>, 
@@ -166,7 +179,7 @@ private:
 
 private:
     const uint64_t logid_ = 0ull;
-    const uint32_t selfid_ = 0ull;
+    const uint32_t selfid_ = 0u;
 
     raft::RaftRole role_ = RaftRole::FOLLOWER;
 
