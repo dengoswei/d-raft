@@ -338,7 +338,8 @@ std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
     bool, 
-    raft::MessageType>
+    raft::MessageType, 
+    bool>
 onStepMessage(
         raft::RaftMem& raft_mem, 
         const raft::Message& msg, 
@@ -354,7 +355,7 @@ onStepMessage(
         // ignore;
         return std::make_tuple(
                 std::move(hard_state), std::move(soft_state), 
-                false, raft::MessageType::MsgInvalidTerm);
+                false, raft::MessageType::MsgInvalidTerm, false);
     }
 
     assert(msg.term() >= term);
@@ -507,7 +508,7 @@ onStepMessage(
 
     return std::make_tuple(
             std::move(hard_state), std::move(soft_state), 
-            false, rsp_msg_type);
+            false, rsp_msg_type, false);
 }
 
 
@@ -648,7 +649,8 @@ std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
     bool, 
-    raft::MessageType>
+    raft::MessageType, 
+    bool>
 onStepMessage(
         raft::RaftMem& raft_mem, 
         const raft::Message& msg, 
@@ -662,7 +664,7 @@ onStepMessage(
     if (msg.term() < term) {
         return std::make_tuple(
                 std::move(hard_state), std::move(soft_state), 
-                false, raft::MessageType::MsgVote);
+                false, raft::MessageType::MsgVote, false);
     }
 
     assert(msg.term() >= term);
@@ -752,7 +754,7 @@ onStepMessage(
 
     return std::make_tuple(
             std::move(hard_state), std::move(soft_state), 
-            mark_broadcast, rsp_msg_type);
+            mark_broadcast, rsp_msg_type, false);
 }
 
 // candidate
@@ -847,13 +849,15 @@ std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
     bool, 
-    raft::MessageType>
+    raft::MessageType, 
+    bool>
 onStepMessage(
         raft::RaftMem& raft_mem, 
         const raft::Message& msg, 
         std::unique_ptr<raft::HardState> hard_state, 
         std::unique_ptr<raft::SoftState> soft_state)
 {
+    bool need_disk_replicate = false;
     raft::RaftState raft_state(raft_mem, hard_state, soft_state);
     assert(raft::RaftRole::LEADER == raft_state.GetRole());
 
@@ -861,7 +865,7 @@ onStepMessage(
     if (msg.term() < term) {
         return std::make_tuple(
                 std::move(hard_state), std::move(soft_state), 
-                false, raft::MessageType::MsgHeartbeat);
+                false, raft::MessageType::MsgHeartbeat, need_disk_replicate);
     }
 
     assert(msg.term() >= term);
@@ -918,14 +922,17 @@ onStepMessage(
 
     case raft::MessageType::MsgAppResp:
         {
-            raft::Replicate* 
-                replicate = raft_mem.GetReplicate();
+            auto replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
+
+            auto disk_replicate = raft_mem.GetDiskReplicate();
+            assert(nullptr != disk_replicate);
 
             mark_broadcast = false;
             uint64_t next_catchup_index = 0;
-            if (replicate->UpdateReplicateState(
-                        msg.from(), !msg.reject(), msg.index())) {
+            bool update = replicate->UpdateReplicateState(
+                    msg.from(), !msg.reject(), msg.index());
+            if (update) {
                 printf ( "follower_id %u msg.index %d reject %d\n", 
                         msg.from(), static_cast<int>(msg.index()), msg.reject() );
                 next_catchup_index = replicate->NextCatchUpIndex(
@@ -934,6 +941,17 @@ onStepMessage(
                 if (0 == next_catchup_index) {
                     logerr("INFO: follower_id %u CatchUp Stop at %" PRIu64, 
                             msg.from(), msg.index());
+                    if (disk_replicate->UpdateReplicateState(
+                                msg.from(), !msg.reject(), msg.index())) {
+                        next_catchup_index = disk_replicate->NextCatchUpIndex(
+                                msg.from(), 
+                                raft_mem.GetDiskMinIndex(), 
+                                raft_mem.GetDiskMaxIndex());
+                        if (0 != next_catchup_index) {
+                            rsp_msg_type = raft::MessageType::MsgApp;
+                            need_disk_replicate = true;
+                        }
+                    }
                 }
                 else {
                     rsp_msg_type = raft::MessageType::MsgApp;
@@ -941,6 +959,7 @@ onStepMessage(
             }
 
             if (0 == next_catchup_index && msg.reject()) {
+                assert(false == need_disk_replicate);
                 assert(raft::MessageType::MsgNull == rsp_msg_type);
                 // try to switch to MsgHeartbeat explore
                 auto next_explore_index = 
@@ -951,15 +970,29 @@ onStepMessage(
                     logerr("INFO: follower_id %u no need explore "
                             "index %" PRIu64, 
                             msg.from(), msg.index());
-                    break;
+                    next_explore_index = 
+                        disk_replicate->NextExploreIndex(
+                                msg.from(), 
+                                raft_mem.GetDiskMinIndex(), 
+                                raft_mem.GetDiskMaxIndex());
+                    if (0 != next_explore_index) {
+                        rsp_msg_type = raft::MessageType::MsgHeartbeat;
+                        need_disk_replicate = true;
+                    }
                 }
-                
-                assert(0 < next_explore_index);
-                rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                logerr("INFO: follower_id %u switch CATCH-UP TO EXPLORE", 
-                        msg.from());
+                else {
+                    assert(0 < next_explore_index);
+                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
+                    logerr("INFO: follower_id %u switch CATCH-UP TO EXPLORE", 
+                            msg.from());
+                }
             }
 
+            if (false == update) {
+                break;
+            }
+
+            assert(true == update);
             // TOOD: FIX
             uint64_t replicate_commit = calculateCommit(
                     raft_state.GetVoteFollowerSet(), replicate);
@@ -978,9 +1011,11 @@ onStepMessage(
 
     case raft::MessageType::MsgHeartbeatResp:
         {
-            raft::Replicate* 
-                replicate = raft_mem.GetReplicate();
+            auto replicate = raft_mem.GetReplicate();
             assert(nullptr != replicate);
+
+            auto disk_replicate = raft_mem.GetDiskReplicate();
+            assert(nullptr != disk_replicate);
 
             mark_broadcast = false;
             if (replicate->UpdateReplicateState(
@@ -994,6 +1029,21 @@ onStepMessage(
                     rsp_msg_type = raft::MessageType::MsgHeartbeat;
                     break;
                 }
+
+                assert(0 == next_explore_index);
+                if (disk_replicate->UpdateReplicateState(
+                            msg.from(), !msg.reject(), msg.index())) {
+                    next_explore_index = 
+                        disk_replicate->NextExploreIndex(
+                                msg.from(), 
+                                raft_mem.GetDiskMinIndex(), 
+                                raft_mem.GetDiskMaxIndex());
+                    if (0 != next_explore_index) {
+                        rsp_msg_type = raft::MessageType::MsgHeartbeat;
+                        need_disk_replicate = true;
+                        break;
+                    }
+                }
             }
 
             auto next_catchup_index = replicate->NextCatchUpIndex(
@@ -1003,6 +1053,13 @@ onStepMessage(
                 // do nothing
                 logerr("INFO: EXPLORE STOP follower_id %u msg.index %" PRIu64, 
                         msg.from(), msg.index());
+                next_catchup_index = disk_replicate->NextCatchUpIndex(
+                        msg.from(), 
+                        raft_mem.GetDiskMinIndex(), raft_mem.GetDiskMaxIndex());
+                if (0 != next_catchup_index) {
+                    rsp_msg_type = raft::MessageType::MsgApp;
+                    need_disk_replicate = true;
+                }
                 break;
             }
 
@@ -1024,7 +1081,7 @@ onStepMessage(
 
     return std::make_tuple(
             std::move(hard_state), std::move(soft_state), 
-            mark_broadcast, rsp_msg_type);
+            mark_broadcast, rsp_msg_type, need_disk_replicate);
 }
 
 // leader
@@ -1145,6 +1202,18 @@ onBuildRsp(
             auto next_explore_index = 
                 replicate->NextExploreIndex(
                         req_msg.from(), raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+            if (0 == next_explore_index) {
+                // invalid term => rsp with heart beat
+                rsp_msg->set_index(raft_mem.GetMaxIndex() + 1);
+                assert(0 < rsp_msg->index());
+                rsp_msg->set_log_term(
+                        getLogTerm(raft_state, rsp_msg->index() - 1));
+                rsp_msg->set_commit_index(raft_state.GetCommit());
+                rsp_msg->set_commit_term(
+                        getLogTerm(raft_state, rsp_msg->commit_index()));
+                break;
+            }
+
             assert(0 < next_explore_index);
             assert(raft_state.GetMinIndex() < next_explore_index);
             assert(next_explore_index <= raft_state.GetMaxIndex() + 1);
@@ -1216,6 +1285,9 @@ RaftMem::RaftMem(
     replicate_ = cutils::make_unique<raft::Replicate>();
     assert(nullptr != replicate_);
 
+    disk_replicate_ = cutils::make_unique<raft::Replicate>();
+    assert(nullptr != disk_replicate_);
+
     vote_follower_set_ = {1, 2, 3};
     assert(vote_follower_set_.end() != vote_follower_set_.find(selfid_));
     vote_follower_set_.erase(selfid_);
@@ -1227,7 +1299,8 @@ std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
     bool, 
-    raft::MessageType>
+    raft::MessageType, 
+    bool>
 RaftMem::Step(
         const raft::Message& msg, 
         std::unique_ptr<raft::HardState> hard_state, 
@@ -1670,7 +1743,22 @@ RaftMem::SetValue(
             size_t>(prop_msg.entries_size()) == vecValue.size());
     // TODO: add limit ??
 
-    return Step(prop_msg, nullptr, nullptr);
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool mark_broadcast = false;
+    auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
+    std::tie(hard_state, 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = Step(prop_msg, nullptr, nullptr);
+    assert(nullptr != hard_state);
+    assert(nullptr == soft_state);
+    assert(true == mark_broadcast);
+    assert(raft::MessageType::MsgApp == rsp_msg_type);
+    assert(false == need_disk_replicate);
+    return std::make_tuple(
+            std::move(hard_state), 
+            std::move(soft_state), mark_broadcast, rsp_msg_type);
 }
 
 

@@ -32,14 +32,17 @@ TEST(CandidateTest, IgnoreMsg)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*null_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
+    assert(false == need_disk_replicate);
 }
 
 TEST(CandidateTest, InvalidTerm)
@@ -55,17 +58,20 @@ TEST(CandidateTest, InvalidTerm)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
     // case 1:
     {
         // revert to follower
         null_msg->set_term(raft_mem->GetTerm() + 1);
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*null_msg, nullptr, nullptr);
         assert(nullptr != hard_state);
         assert(nullptr != soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgNull == rsp_msg_type);
+        assert(false == need_disk_replicate);
         assert(null_msg->term() == hard_state->term());
         assert(raft::RaftRole::FOLLOWER == 
                 static_cast<raft::RaftRole>(soft_state->role()));
@@ -77,12 +83,14 @@ TEST(CandidateTest, InvalidTerm)
         // rsp with MsgVote
         null_msg->set_term(raft_mem->GetTerm() - 1);
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*null_msg, nullptr, nullptr);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgVote == rsp_msg_type);
+        assert(false == need_disk_replicate);
 
         auto rsp_msg = raft_mem->BuildRspMsg(
                 *null_msg, nullptr, nullptr, mark_broadcast, rsp_msg_type);
@@ -144,6 +152,7 @@ TEST(CandidateTest, BecomeLeader)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     auto vote_rsp_msg = build_from_msg(
             *raft_mem, raft::MessageType::MsgVoteResp, 2);
@@ -151,12 +160,14 @@ TEST(CandidateTest, BecomeLeader)
     vote_rsp_msg->set_reject(false);
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*vote_rsp_msg, nullptr, nullptr);
     assert(nullptr != hard_state);
     assert(nullptr != soft_state);
     assert(true == mark_broadcast);
     assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+    assert(false == need_disk_replicate);
 
     assert(hard_state->has_vote());
     assert(raft_mem->GetSelfId() == hard_state->vote());

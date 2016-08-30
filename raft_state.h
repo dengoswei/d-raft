@@ -11,6 +11,7 @@ class Entry;
 class HardState;
 class SoftState;
 class RaftMem;
+class Replicate;
 
 enum class RaftRole : uint32_t;
 

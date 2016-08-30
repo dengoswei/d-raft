@@ -192,9 +192,12 @@ apply_msg(
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = raft_mem->Step(msg, nullptr, nullptr);
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = raft_mem->Step(msg, nullptr, nullptr);
+    assert(false == need_disk_replicate);
     auto rsp_msg = raft_mem->BuildRspMsg(
             msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
     raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
@@ -237,3 +240,21 @@ void loop_until(
 
     return loop_until(mapRaft, vecRspMsg);
 }
+
+
+bool make_leader(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
+        uint32_t next_leader_id)
+{
+    assert(mapRaft.end() != mapRaft.find(next_leader_id));
+    assert(nullptr != mapRaft.at(next_leader_id));
+
+    std::vector<std::unique_ptr<raft::Message>> vecMsg;
+    vecMsg.push_back(nullptr);
+    vecMsg[0] = trigger_timeout(mapRaft, next_leader_id);
+    assert(nullptr != vecMsg[0]);
+
+    loop_until(mapRaft, vecMsg);
+    return raft::RaftRole::LEADER == mapRaft.at(next_leader_id)->GetRole();
+}
+

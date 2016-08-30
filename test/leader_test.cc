@@ -26,14 +26,17 @@ TEST(LeaderTest, IgnoreMsg)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*null_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
+    assert(false == need_disk_replicate);
 }
 
 TEST(LeaderTest, InvalidTerm)
@@ -49,18 +52,21 @@ TEST(LeaderTest, InvalidTerm)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     // case 1
     {
         // revert to follower
         null_msg->set_term(raft_mem->GetTerm() + 1);
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*null_msg, nullptr, nullptr);
         assert(nullptr != hard_state);
         assert(nullptr != soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgNull == rsp_msg_type);
+        assert(false == need_disk_replicate);
         assert(null_msg->term() == hard_state->term());
         assert(raft::RaftRole::FOLLOWER == 
                 static_cast<raft::RaftRole>(soft_state->role()));
@@ -71,12 +77,14 @@ TEST(LeaderTest, InvalidTerm)
     {
         null_msg->set_term(raft_mem->GetTerm() - 1);
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*null_msg, nullptr, nullptr);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+        assert(false == need_disk_replicate);
 
         null_msg->set_index(1);
         auto rsp_msg = raft_mem->BuildRspMsg(
@@ -153,14 +161,17 @@ TEST(LeaderTest, MsgProp)
         std::unique_ptr<raft::SoftState> soft_state;
         bool mark_broadcast = false;
         auto rsp_msg_type = raft::MessageType::MsgNull;
+        bool need_disk_replicate = false;
 
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*prop_msg, nullptr, nullptr);
         assert(nullptr != hard_state);
         assert(nullptr == soft_state);
         assert(true == mark_broadcast);
         assert(raft::MessageType::MsgApp == rsp_msg_type);
+        assert(false == need_disk_replicate);
 
         assert(prop_msg->entries_size() == hard_state->entries_size());
         assert(prop_msg->entries(0) == hard_state->entries(0));
@@ -197,14 +208,17 @@ TEST(LeaderTest, MsgProp)
         std::unique_ptr<raft::SoftState> soft_state;
         bool mark_broadcast = false;
         auto rsp_msg_type = raft::MessageType::MsgNull;
+        bool need_disk_replicate = false;
 
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*prop_msg, nullptr, nullptr);
         assert(nullptr != hard_state);
         assert(nullptr == soft_state);
         assert(true == mark_broadcast);
         assert(raft::MessageType::MsgApp == rsp_msg_type);
+        assert(false == need_disk_replicate);
 
         assert(prop_msg->entries_size() == hard_state->entries_size());
         for (int idx = 0; idx < prop_msg->entries_size(); ++idx) {
@@ -255,14 +269,17 @@ TEST(LeaderTest, MsgHearbeatUntilMatch)
         std::unique_ptr<raft::SoftState> soft_state;
         bool mark_broadcast = false;
         auto rsp_msg_type = raft::MessageType::MsgNull;
+        bool need_disk_replicate = false;
 
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*hb_rsp_msg, nullptr, nullptr);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+        assert(false == need_disk_replicate);
         printf ( "hb_rsp_msg %d replicate->rejected %d\n", 
                 static_cast<int>(hb_rsp_msg->index()), 
                 raft_mem->GetReplicate()->GetRejectedIndex(hb_rsp_msg->from()) );
@@ -280,12 +297,14 @@ TEST(LeaderTest, MsgHearbeatUntilMatch)
         hb_rsp_msg->set_reject(true);
 
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*hb_rsp_msg, nullptr, nullptr);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+        assert(false == need_disk_replicate);
         assert(hb_rsp_msg->index() - 1 == 
                 raft_mem->GetReplicate()->GetRejectedIndex(hb_rsp_msg->from()));
 
@@ -300,12 +319,14 @@ TEST(LeaderTest, MsgHearbeatUntilMatch)
         hb_rsp_msg->set_reject(false);
 
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*hb_rsp_msg, nullptr, nullptr);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+        assert(false == need_disk_replicate);
         assert(hb_rsp_msg->index() - 1 == 
                 raft_mem->GetReplicate()->GetAcceptedIndex(hb_rsp_msg->from()));
 
@@ -319,12 +340,14 @@ TEST(LeaderTest, MsgHearbeatUntilMatch)
         hb_rsp_msg->set_reject(true);
 
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, mark_broadcast, rsp_msg_type, 
+                need_disk_replicate) = 
             raft_mem->Step(*hb_rsp_msg, nullptr, nullptr);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgApp == rsp_msg_type);
+        assert(false == need_disk_replicate);
         assert(hb_rsp_msg->index() - 1 ==
                 raft_mem->GetReplicate()->GetRejectedIndex(hb_rsp_msg->from()));
     }
@@ -355,13 +378,16 @@ TEST(LeaderTest, OutdateMsgHeartbeatReject)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*hb_rsp_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
+    assert(false == need_disk_replicate);
     assert(hb_rsp_msg->index() - 1 ==
             raft_mem->GetReplicate()->GetAcceptedIndex(hb_rsp_msg->from()));
 
@@ -369,12 +395,14 @@ TEST(LeaderTest, OutdateMsgHeartbeatReject)
     hb_rsp_msg->set_reject(true);
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*hb_rsp_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
+    assert(false == need_disk_replicate);
     assert(raft_mem->GetMaxIndex() == 
             raft_mem->GetReplicate()->GetAcceptedIndex(hb_rsp_msg->from()));
     assert(0 == raft_mem->GetReplicate()->GetRejectedIndex(hb_rsp_msg->from()));
@@ -406,15 +434,18 @@ TEST(LeaderTest, MsgAppReject)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*app_rsp_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     // acccepted_ nothing, rejected: 2 => min_index 1 avaible
     assert(raft::MessageType::MsgApp == rsp_msg_type);
+    assert(false == need_disk_replicate);
     assert(app_rsp_msg->index() - 1 ==
             raft_mem->GetReplicate()->GetRejectedIndex(app_rsp_msg->from()));
 
@@ -424,12 +455,14 @@ TEST(LeaderTest, MsgAppReject)
     app_rsp_msg->set_reject(true);
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*app_rsp_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+    assert(false == need_disk_replicate);
     assert(app_rsp_msg->index() - 1 == 
             raft_mem->GetReplicate()->GetRejectedIndex(app_rsp_msg->from()));
 }
@@ -459,14 +492,17 @@ TEST(LeaderTest, MsgAppAccepted)
     std::unique_ptr<raft::SoftState> soft_state;
     bool mark_broadcast = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = 
         raft_mem->Step(*app_rsp_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgApp == rsp_msg_type);
+    assert(false == need_disk_replicate);
     assert(app_rsp_msg->index() - 1 ==
             raft_mem->GetReplicate()->GetAcceptedIndex(app_rsp_msg->from()));
 

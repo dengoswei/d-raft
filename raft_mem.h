@@ -27,8 +27,10 @@ private:
             std::tuple<
                 std::unique_ptr<raft::HardState>, 
                 std::unique_ptr<raft::SoftState>, 
+                // mark_broadcast, rsp_msg_type, need_disk_replicate
                 bool, 
-                raft::MessageType>(
+                raft::MessageType, 
+                bool>(
                         raft::RaftMem&, 
                         const raft::Message&, 
                         std::unique_ptr<raft::HardState>, 
@@ -78,7 +80,7 @@ public:
     std::tuple<
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>, 
-        bool, raft::MessageType>
+        bool, raft::MessageType, bool>
             Step(
                 const raft::Message& msg, 
                 std::unique_ptr<raft::HardState> hard_state, 
@@ -159,6 +161,20 @@ public:
 
     const std::set<uint32_t>& GetVoteFollowerSet() const;
 
+    // disk replicate
+    raft::Replicate* GetDiskReplicate() {
+        return disk_replicate_.get();
+    }
+    
+    uint64_t GetDiskMinIndex() const {
+        return disk_min_index_;
+    }
+
+    uint64_t GetDiskMaxIndex() const {
+        return disk_max_index_;
+    }
+
+
 private:
     void setRole(uint64_t next_term, uint32_t role);
 
@@ -202,6 +218,10 @@ private:
     
     std::map<uint32_t, uint64_t> vote_map_;
     std::unique_ptr<raft::Replicate> replicate_;
+
+    uint64_t disk_min_index_ = 0;
+    uint64_t disk_max_index_ = 0;
+    std::unique_ptr<raft::Replicate> disk_replicate_;
 
     std::set<uint32_t> vote_follower_set_;
 }; // class RaftMem

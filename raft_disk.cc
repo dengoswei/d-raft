@@ -1,4 +1,8 @@
 #include "raft_disk.h"
+#include "raft_mem.h"
+#include "mem_utils.h"
+#include "log_utils.h"
+#include "replicate.h"
 
 
 namespace raft {
@@ -10,6 +14,7 @@ RaftDisk::RaftDisk(
     : logid_(logid)
     , selfid_(selfid)
     , readcb_(readcb)
+    , role_(raft::RaftRole::FOLLOWER)
 {
     assert(nullptr != readcb);
     
@@ -34,7 +39,7 @@ bool RaftDisk::updateTerm(uint64_t new_term)
     return true;
 }
 
-bool RaftDisk::updateRole(uint64_t new_role)
+bool RaftDisk::updateRole(raft::RaftRole new_role)
 {
     if (new_role == role_) {
         return false;
@@ -45,25 +50,73 @@ bool RaftDisk::updateRole(uint64_t new_role)
     return true;
 }
 
-// TODO
-std::tuple<int, std::unique_ptr<raft::Message>>
-RaftDisk::Step(
+bool RaftDisk::updateCommit(uint64_t new_commit_index)
+{
+    if (new_commit_index == commit_) {
+        return false;
+    }
+
+    assert(commit_ < new_commit_index);
+    commit_ = new_commit_index;
+    return true;
+}
+
+bool RaftDisk::updateMinIndex(uint64_t new_min_index)
+{
+    if (new_min_index == min_index_) {
+        return false;
+    }
+
+    assert(min_index_ < new_min_index);
+    min_index_ = new_min_index;
+    return true;
+}
+
+bool RaftDisk::updateMaxIndex(uint64_t new_max_index)
+{
+    if (new_max_index == max_index_) {
+        return false;
+    }
+
+    max_index_ = new_max_index;
+    assert(nullptr != replicate_);
+    replicate_->Fix(max_index_);
+    return true;
+}
+
+bool RaftDisk::Update(
         raft::RaftRole new_role, 
         uint64_t new_term, 
+        uint64_t new_commit_index, 
+        uint64_t new_min_index, 
+        uint64_t new_max_index)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    bool update = false;
+
+    update |= updateRole(new_role);
+    update |= updateTerm(new_term);
+    update |= updateCommit(new_commit_index);
+    update |= updateMinIndex(new_min_index);
+    update |= updateMaxIndex(new_max_index);
+    assert(min_index_ <= commit_);
+    assert(commit_ <= max_index_);
+    return update; 
+}
+
+std::tuple<int, std::unique_ptr<raft::Message>>
+RaftDisk::Step(
         uint32_t follower_id, 
         uint64_t next_log_index, 
         bool reject, 
         raft::MessageType rsp_msg_type)
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+
     assert(0 < follower_id);
     assert(0 < next_log_index);
     assert(raft::MessageType::MsgApp == rsp_msg_type || 
             raft::MessageType::MsgHeartbeat == rsp_msg_type);
-    updateTerm(new_term);
-    assert(new_term == term_);
-
-    updateRole(new_role);
-    assert(new_role == role_);
 
     if (raft::RaftRole::LEADER != role_) {
         // only leader can do the catch up!
@@ -102,10 +155,10 @@ RaftDisk::stepHearbeatMsg(uint32_t follower_id)
 
     auto next_explore_index = 
         replicate_->NextExploreIndex(
-                follower_id, GetMinIndex(), GetMaxIndex());
+                follower_id, getMinIndex(), getMaxIndex());
     assert(1 < next_explore_index);
-    assert(GetMinIndex() < next_explore_index);
-    assert(next_explore_index <= GetMaxIndex() + 1);
+    assert(getMinIndex() < next_explore_index);
+    assert(next_explore_index <= getMaxIndex() + 1);
 
     rsp_msg->set_index(next_explore_index);
 
@@ -124,7 +177,7 @@ RaftDisk::stepHearbeatMsg(uint32_t follower_id)
     assert(1 == hard_state->entries_size());
     const auto& disk_entry = hard_state->entries(0);
     assert(disk_entry.index() == next_explore_index - 1);
-    rsp_msg->set_log_term(disk_entry->term());
+    rsp_msg->set_log_term(disk_entry.term());
     return std::make_tuple(0, std::move(rsp_msg));
 }
 
@@ -139,15 +192,15 @@ RaftDisk::stepAppMsg(uint32_t follower_id)
     assert(nullptr != rsp_msg);
 
     auto next_catchup_index = 
-        replicate->NextCatchUpIndex(
-                follower_id, GetMinIndex(), GetMaxIndex());
+        replicate_->NextCatchUpIndex(
+                follower_id, getMinIndex(), getMaxIndex());
     assert(0 < next_catchup_index);
 
     rsp_msg->set_index(next_catchup_index);
     int max_size = std::min<int>(
-            GetMaxIndex() + 1 - next_catchup_index, 10);
+            getMaxIndex() + 1 - next_catchup_index, 10);
     assert(0 < max_size);
-    assert(next_catchup_index + max_size <= GetMaxIndex() + 1);
+    assert(next_catchup_index + max_size <= getMaxIndex() + 1);
     int ret = 0;
     std::unique_ptr<raft::HardState> hard_state;
     if (uint64_t{1} == next_catchup_index) {
@@ -174,12 +227,12 @@ RaftDisk::stepAppMsg(uint32_t follower_id)
         rsp_msg->set_log_term(0);
         for (int idx = 0; idx < hard_state->entries_size(); ++idx) {
             const auto& disk_entry = hard_state->entries(idx);
-            assert(disk_entry->index() == next_catchup_index + idx);
+            assert(disk_entry.index() == next_catchup_index + idx);
             auto* rsp_entry = rsp_msg->add_entries();
             *rsp_entry = disk_entry;
-            if (disk_entry->index() <= commit_) {
-                rsp_msg->set_commit_index(disk_entry->index());
-                rsp_msg->set_commit_term(disk_entry->term());
+            if (disk_entry.index() <= commit_) {
+                rsp_msg->set_commit_index(disk_entry.index());
+                rsp_msg->set_commit_term(disk_entry.term());
             }
         }
     }
@@ -188,12 +241,12 @@ RaftDisk::stepAppMsg(uint32_t follower_id)
         rsp_msg->set_log_term(hard_state->entries(0).term());
         for (int idx = 1; idx < hard_state->entries_size(); ++idx) {
             const auto& disk_entry = hard_state->entries(idx);
-            assert(disk_entry->index() == next_catchup_index + idx);
+            assert(disk_entry.index() == next_catchup_index + idx);
             auto* rsp_entry = rsp_msg->add_entries();
             *rsp_entry = disk_entry;
-            if (disk_entry->index() <= commit_) {
-                rsp_msg->set_commit_index(disk_entry->index());
-                rsp_msg->set_commit_term(disk_entry->term());
+            if (disk_entry.index() <= commit_) {
+                rsp_msg->set_commit_index(disk_entry.index());
+                rsp_msg->set_commit_term(disk_entry.term());
             }
         }
     }

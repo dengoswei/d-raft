@@ -47,6 +47,9 @@ void update_role(
 
 bool operator==(const raft::Entry& a, const raft::Entry& b);
 
+bool make_leader(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
+        uint32_t next_leader_id);
 
 std::unique_ptr<raft::Message>
 trigger_timeout(
