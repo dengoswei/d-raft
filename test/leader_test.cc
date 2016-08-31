@@ -498,7 +498,7 @@ TEST(LeaderTest, MsgAppAccepted)
             soft_state, mark_broadcast, rsp_msg_type, 
             need_disk_replicate) = 
         raft_mem->Step(*app_rsp_msg, nullptr, nullptr);
-    assert(nullptr == hard_state);
+    assert(nullptr != hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgApp == rsp_msg_type);
@@ -507,11 +507,13 @@ TEST(LeaderTest, MsgAppAccepted)
             raft_mem->GetReplicate()->GetAcceptedIndex(app_rsp_msg->from()));
 
     auto app_msg = raft_mem->BuildRspMsg(
-            *app_rsp_msg, nullptr, nullptr, mark_broadcast, rsp_msg_type);
+            *app_rsp_msg, hard_state, nullptr, mark_broadcast, rsp_msg_type);
     assert(nullptr != app_msg);
     assert(rsp_msg_type == app_msg->type());
     assert(app_msg->index() == app_rsp_msg->index());
     assert(0 < app_msg->entries_size());
+
+    raft_mem->ApplyState(std::move(hard_state), nullptr);
     for (int idx = 0; idx < app_msg->entries_size(); ++idx) {
         const auto& msg_entry = app_msg->entries(idx); 
         assert(msg_entry.index() == app_msg->index() + idx);

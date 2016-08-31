@@ -67,12 +67,21 @@ public:
 
 
     std::tuple<
+        std::unique_ptr<raft::Message>, 
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>, 
         bool, raft::MessageType>
             SetValue(
-                    const std::vector<std::string>& vecValue, 
-                    const std::vector<uint64_t>& vecRequestID);
+                    const std::vector<std::string>& vec_value, 
+                    const std::vector<uint64_t>& vec_reqid);
+
+    // prop_req msg, hs, sf, mk, rsp_msg_type
+    std::tuple<
+        std::unique_ptr<raft::Message>, 
+        std::unique_ptr<raft::HardState>, 
+        std::unique_ptr<raft::SoftState>, 
+        bool, raft::MessageType>
+            SetValue(const std::string& value, uint64_t reqid);
 
 
 
@@ -91,6 +100,8 @@ public:
         std::unique_ptr<raft::SoftState>, 
         bool, raft::MessageType>
             CheckTimeout(bool force_timeout);
+
+    std::unique_ptr<raft::Message> BroadcastHeartBeatMsg();
 
     // 0 ==
     void ApplyState(

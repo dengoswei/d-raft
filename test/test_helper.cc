@@ -1,4 +1,5 @@
 #include "test_helper.h"
+#include "log_utils.h"
 
 std::unique_ptr<raft::RaftMem>
 build_raft_mem(
@@ -216,6 +217,9 @@ void loop_until(
     for (const auto& msg : vecMsg) {
         assert(nullptr != msg);
 
+        logdebug("MSG type %d from %u to %u index %d", 
+                static_cast<int>(msg->type()), 
+                msg->from(), msg->to(), static_cast<int>(msg->index()));
         if (0 != msg->to()) {
             auto rsp_msg = apply_msg(mapRaft, *msg);
             if (nullptr != rsp_msg) {

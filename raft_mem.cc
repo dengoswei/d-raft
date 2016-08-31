@@ -131,19 +131,15 @@ uint64_t calculateCommit(
     auto accepted_distribution = 
         replicate->GetAcceptedDistributionOn(vote_follower_set);
     size_t cnt = 0;
-    uint64_t commit_index = 0;
-    for (const auto& idx_cnt_pair : accepted_distribution) {
-        assert(0 < idx_cnt_pair.second);
-        if (cnt + idx_cnt_pair.second >= major_cnt) {
-            return commit_index;
+    for (auto riter = accepted_distribution.rbegin();
+            riter != accepted_distribution.rend(); ++riter) {
+        if (cnt + riter->second >= major_cnt) {
+            return riter->first;
         }
 
-        cnt += idx_cnt_pair.second;
+        cnt += riter->second;
         assert(cnt < major_cnt);
-        assert(commit_index < idx_cnt_pair.first);
-        commit_index = idx_cnt_pair.first;
     }
-
     // must be the case !!!
     return 0;
 }
@@ -211,13 +207,13 @@ int resolveEntries(
     }
 
     assert(0 < min_index);
-    uint64_t msg_min_index = msg.index();
+    uint64_t check_index = msg.index() - 1;
     uint64_t msg_max_index = msg.entries(msg.entries_size() - 1).index();
-    assert(msg_min_index <= msg_max_index);
-    if (msg_max_index < min_index || msg_min_index > max_index) {
+    assert(check_index < msg_max_index);
+    if (msg_max_index < min_index || check_index > max_index) {
         logerr("INFO: raft_mem %" PRIu64 " %" PRIu64 " "
                 " msg.index %" PRIu64 " %" PRIu64, 
-                min_index, max_index, msg_min_index, msg_max_index);
+                min_index, max_index, check_index, msg_max_index);
         return -2;
     }
 
@@ -225,7 +221,7 @@ int resolveEntries(
     //      => check prev_index && prev_logterm
     {
         assert(uint64_t{1} <= msg.index());
-        uint64_t check_index = msg.index() - 1;
+        // uint64_t check_index = msg.index() - 1;
         if (0 == check_index || min_index > check_index) {
             if (0 == check_index) {
                 assert(0 == msg.log_term());
@@ -460,6 +456,12 @@ onStepMessage(
             }
 
             int app_idx = resolveEntries(raft_state, msg);
+            logdebug("TEST: from %u msg.index %" PRIu64 
+                    " msg.log_term %" PRIu64 " entries_size %d app_idx %d "
+                    "local min_index %" PRIu64 " max_index %" PRIu64, 
+                    msg.from(), msg.index(), msg.log_term(), 
+                    msg.entries_size(), app_idx, 
+                    raft_state.GetMinIndex(), raft_state.GetMaxIndex());
             if (0 <= app_idx) {
                 if (app_idx < msg.entries_size() && 
                         nullptr == hard_state) { 
@@ -561,23 +563,33 @@ onBuildRsp(
     case raft::MessageType::MsgAppResp:
     case raft::MessageType::MsgHeartbeatResp:
         {
+            printf ( "req_msg.index %d log_term %d min %d max %d\n", 
+                    static_cast<int>(req_msg.index()), 
+                    static_cast<int>(req_msg.log_term()), 
+                    static_cast<int>(raft_state.GetMinIndex()), 
+                    static_cast<int>(raft_state.GetMaxIndex()) );
             if (raft_state.IsMatch(
                         req_msg.index() - 1, req_msg.log_term())) {
                 rsp_msg->set_reject(false); 
-                uint64_t max_msg_index = (0 == req_msg.entries_size()) ? 
-                    req_msg.index() - 1 : 
-                    req_msg.entries(req_msg.entries_size() - 1).index();
-                printf ( "max_msg_index %d raft_state.GetCommit %d\n", 
-                        static_cast<int>(max_msg_index), 
-                        static_cast<int>(raft_state.GetCommit()));
+                assert(0 == raft_state.GetCommit() || 
+                        raft_state.GetMinIndex() <= raft_state.GetCommit());
+
+                uint64_t req_max_index = 
+                    0 == req_msg.entries_size() ? 
+                        req_msg.index() - 1 : 
+                        req_msg.entries(req_msg.entries_size() - 1).index();
                 rsp_msg->set_index(
-                        std::max(raft_state.GetCommit(), max_msg_index) + 1);
+                        std::max(raft_state.GetCommit() + 1, req_max_index + 1));
             }
             else {
+                assert(0 < req_msg.index() - 1);
                 rsp_msg->set_reject(true);
-                rsp_msg->set_index(req_msg.index());
-                printf ( "do not match: req_msg.index %d\n", 
-                        static_cast<int>(req_msg.index()) );
+                rsp_msg->set_index(
+                        req_msg.index() - 1 > raft_state.GetMaxIndex() ? 
+                            raft_mem.GetMaxIndex() + 2 : req_msg.index());
+                printf ( "do not match: req_msg.index %d rsp_msg->index %d\n", 
+                        static_cast<int>(req_msg.index()), 
+                        static_cast<int>(rsp_msg->index()) );
             }
         }
         break;
@@ -996,6 +1008,9 @@ onStepMessage(
             // TOOD: FIX
             uint64_t replicate_commit = calculateCommit(
                     raft_state.GetVoteFollowerSet(), replicate);
+            printf ( "TEST: replicate_commit %u commit %u\n", 
+                    static_cast<int>(replicate_commit), 
+                    static_cast<int>(raft_state.GetCommit()));
             if (raft_state.GetCommit() < replicate_commit) {
                 // => update commit
                 if (nullptr == hard_state) {
@@ -1370,6 +1385,9 @@ void RaftMem::updateTerm(uint64_t new_term)
 void RaftMem::updateVote(uint64_t vote_term, uint32_t vote)
 {
     assert(term_ == vote_term);
+    printf ( "vote_term %d vote %u vote_ %u\n", 
+            static_cast<int>(vote_term), 
+            vote, vote_);
     assert(0 == vote_);
     assert(0 == leader_id_);
     logerr("INFO: term_ %" PRIu64 " vote %u", term_, vote);
@@ -1479,11 +1497,12 @@ void RaftMem::applyHardState(
     }
 
     assert(nullptr != hard_state);
-    if (hard_state->has_term()) {
+    if (hard_state->has_term() && hard_state->term() != GetTerm()) {
         updateTerm(hard_state->term());
     }
 
-    if (hard_state->has_vote()) {
+    if (hard_state->has_vote() && 
+            hard_state->vote() != GetVote(GetTerm())) {
         updateVote(hard_state->term(), hard_state->vote());
     }
 
@@ -1704,43 +1723,47 @@ int RaftMem::Init(
 }
 
 std::tuple<
-std::unique_ptr<raft::HardState>, 
-std::unique_ptr<raft::SoftState>, 
-bool, 
-raft::MessageType>
+    std::unique_ptr<raft::Message>, 
+    std::unique_ptr<raft::HardState>, 
+    std::unique_ptr<raft::SoftState>, 
+    bool, 
+    raft::MessageType>
 RaftMem::SetValue(
-        const std::vector<std::string>& vecValue, 
-        const std::vector<uint64_t>& vecRequestID)
+        const std::vector<std::string>& vec_value, 
+        const std::vector<uint64_t>& vec_reqid)
 {
-    if (vecValue.empty()) {
+    assert(raft::RaftRole::LEADER == role_);
+    if (vec_value.empty()) {
         return std::make_tuple(
-                nullptr, nullptr, false, raft::MessageType::MsgNull);
+                nullptr, nullptr, nullptr, 
+                false, raft::MessageType::MsgNull);
     }
 
-    assert(vecValue.size() == vecRequestID.size());
+    assert(vec_value.size() == vec_reqid.size());
 
-    raft::Message prop_msg;
-    prop_msg.set_type(raft::MessageType::MsgProp);
-    prop_msg.set_logid(logid_);
-    prop_msg.set_to(selfid_);
-    prop_msg.set_from(0);
-    prop_msg.set_term(GetTerm());
+    auto prop_msg = cutils::make_unique<raft::Message>();
+    assert(nullptr != prop_msg);
+    prop_msg->set_type(raft::MessageType::MsgProp);
+    prop_msg->set_logid(logid_);
+    prop_msg->set_to(selfid_);
+    prop_msg->set_from(0);
+    prop_msg->set_term(term_);
     uint64_t max_index = GetMaxIndex();
-    prop_msg.set_index(max_index + 1);
-    prop_msg.set_log_term(
+    prop_msg->set_index(max_index + 1);
+    prop_msg->set_log_term(
             logs_.empty() ? 0 : logs_.back()->term());
-    for (size_t idx = 0; idx < vecValue.size(); ++idx) {
-        auto new_entry = prop_msg.add_entries();
-        assert(nullptr == new_entry);
+    for (size_t idx = 0; idx < vec_value.size(); ++idx) {
+        auto new_entry = prop_msg->add_entries();
+        assert(nullptr != new_entry);
         new_entry->set_type(raft::EntryType::EntryNormal);
-        new_entry->set_term(prop_msg.term());
-        new_entry->set_index(prop_msg.index() + idx);
-        new_entry->set_reqid(vecRequestID[idx]);
-        new_entry->set_data(vecValue[idx]);
+        new_entry->set_term(prop_msg->term());
+        new_entry->set_index(prop_msg->index() + idx);
+        new_entry->set_reqid(vec_reqid[idx]);
+        new_entry->set_data(vec_value[idx]);
     }
 
     assert(static_cast<
-            size_t>(prop_msg.entries_size()) == vecValue.size());
+            size_t>(prop_msg->entries_size()) == vec_value.size());
     // TODO: add limit ??
 
     std::unique_ptr<raft::HardState> hard_state;
@@ -1750,17 +1773,92 @@ RaftMem::SetValue(
     bool need_disk_replicate = false;
     std::tie(hard_state, 
             soft_state, mark_broadcast, rsp_msg_type, 
-            need_disk_replicate) = Step(prop_msg, nullptr, nullptr);
+            need_disk_replicate) = Step(*prop_msg, nullptr, nullptr);
     assert(nullptr != hard_state);
     assert(nullptr == soft_state);
     assert(true == mark_broadcast);
     assert(raft::MessageType::MsgApp == rsp_msg_type);
     assert(false == need_disk_replicate);
     return std::make_tuple(
+            std::move(prop_msg), 
             std::move(hard_state), 
             std::move(soft_state), mark_broadcast, rsp_msg_type);
 }
 
+std::tuple<
+    std::unique_ptr<raft::Message>, 
+    std::unique_ptr<raft::HardState>, 
+    std::unique_ptr<raft::SoftState>, 
+    bool, 
+    raft::MessageType>
+RaftMem::SetValue(
+        const std::string& value, uint64_t reqid)
+{
+    assert(raft::RaftRole::LEADER == role_);
+
+    auto prop_msg = cutils::make_unique<raft::Message>();
+    assert(nullptr != prop_msg);
+
+    prop_msg->set_type(raft::MessageType::MsgProp);
+    prop_msg->set_logid(logid_);
+    prop_msg->set_to(selfid_);
+    prop_msg->set_from(0);
+    prop_msg->set_term(term_);
+
+    auto max_index = GetMaxIndex();
+    prop_msg->set_index(max_index + 1);
+    prop_msg->set_log_term(
+            logs_.empty() ? 0 : logs_.back()->term());
+    {
+        auto new_entry = prop_msg->add_entries();
+        assert(nullptr != new_entry);
+        new_entry->set_type(raft::EntryType::EntryNormal);
+        new_entry->set_term(prop_msg->term());
+        new_entry->set_index(prop_msg->index());
+        new_entry->set_reqid(reqid);
+        new_entry->set_data(value);
+    }
+    assert(1 == prop_msg->entries_size());
+
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool mark_broadcast = false;
+    auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
+    std::tie(hard_state, 
+            soft_state, mark_broadcast, rsp_msg_type, 
+            need_disk_replicate) = Step(*prop_msg, nullptr, nullptr);
+    assert(nullptr != hard_state);
+    assert(nullptr == soft_state);
+    assert(true == mark_broadcast);
+    assert(raft::MessageType::MsgApp == rsp_msg_type);
+    assert(false == need_disk_replicate);
+    return std::make_tuple(
+            std::move(prop_msg), 
+            std::move(hard_state), std::move(soft_state), 
+            mark_broadcast, rsp_msg_type);
+}
+
+std::unique_ptr<raft::Message> 
+RaftMem::BroadcastHeartBeatMsg()
+{
+    if (raft::RaftRole::LEADER != role_) {
+        return nullptr;
+    }
+
+    assert(raft::RaftRole::LEADER == role_);
+
+    raft::Message fake_msg;
+    fake_msg.set_type(raft::MessageType::MsgNull);
+    fake_msg.set_logid(logid_);
+    fake_msg.set_to(selfid_);
+    fake_msg.set_from(0);
+    fake_msg.set_term(term_);
+
+    return leader::onBuildRsp(
+            *this, fake_msg, nullptr, nullptr, 
+            true, raft::MessageType::MsgHeartbeat);
+}
 
 } // namespace raft
 

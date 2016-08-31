@@ -1,6 +1,7 @@
 #include "raft_state.h"
 #include "raft_mem.h"
 #include "raft.pb.h"
+#include "log_utils.h"
 
 namespace raft {
 
@@ -230,10 +231,14 @@ bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
     }
 
     assert(0 < min_index);
-    if (log_index < min_index) {
-        // must be the case !!
-        assert(log_term <= GetTerm());
+    if (min_index > log_index) {
+        logerr("IMPORTANT: min_index %" PRIu64 " log_index %" PRIu64, 
+                min_index, log_index);
         return true;
+    }
+
+    if (log_index > GetMaxIndex()) {
+        return false;
     }
 
     assert(min_index <= log_index);
