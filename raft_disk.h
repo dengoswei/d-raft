@@ -41,6 +41,14 @@ public:
             uint64_t next_log_index, 
             bool reject, raft::MessageType rsp_msg_type);
 
+public:
+    
+    raft::RaftRole GetRole();
+    uint64_t GetTerm();
+    uint64_t GetCommit();
+    uint64_t GetMinIndex();
+    uint64_t GetMaxIndex();
+
 private:
 
     uint64_t getMinIndex() const {

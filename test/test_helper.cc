@@ -185,6 +185,11 @@ apply_msg(
         std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
         const raft::Message& msg)
 {
+    if (mapRaft.end() == mapRaft.find(msg.to()) || 
+            nullptr == mapRaft.at(msg.to())) {
+        return nullptr;
+    }
+
     assert(mapRaft.end() != mapRaft.find(msg.to()));
 
     auto& raft_mem = mapRaft.at(msg.to());
@@ -260,5 +265,52 @@ bool make_leader(
 
     loop_until(mapRaft, vecMsg);
     return raft::RaftRole::LEADER == mapRaft.at(next_leader_id)->GetRole();
+}
+
+
+std::unique_ptr<raft::Message>
+set_value(
+        raft::RaftMem& raft_mem, 
+        const std::string& value, uint64_t reqid)
+{
+    assert(raft::RaftRole::LEADER == raft_mem.GetRole());
+    std::unique_ptr<raft::Message> prop_msg;
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool mark_broadcast = false;
+    auto rsp_msg_type = raft::MessageType::MsgNull;
+
+    std::tie(prop_msg, 
+            hard_state, soft_state, mark_broadcast, rsp_msg_type)
+        = raft_mem.SetValue(value, reqid);
+    assert(nullptr != prop_msg);
+    assert(nullptr != hard_state);
+    assert(nullptr == soft_state);
+    assert(true == mark_broadcast);
+    assert(raft::MessageType::MsgApp == rsp_msg_type);
+
+    auto app_msg = raft_mem.BuildRspMsg(
+            *prop_msg, hard_state, soft_state, 
+            mark_broadcast, rsp_msg_type);
+    assert(nullptr != app_msg);
+    assert(1 == app_msg->entries_size());
+    assert(raft::MessageType::MsgApp == app_msg->type());
+    raft_mem.ApplyState(std::move(hard_state), std::move(soft_state));
+
+    return app_msg;
+}
+
+
+std::unique_ptr<raft::RaftDisk>
+build_raft_disk(uint32_t id, FakeDiskStorage& storage)
+{
+    auto raft_disk = cutils::make_unique<raft::RaftDisk>(1, id, 
+            [&](uint64_t logid, uint64_t log_index, int entries_size)
+                -> std::tuple<int, std::unique_ptr<raft::HardState>> {
+                return storage.Read(logid, log_index, entries_size);
+            });
+
+    assert(nullptr != raft_disk);
+    return raft_disk;
 }
 

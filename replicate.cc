@@ -136,6 +136,7 @@ uint64_t Replicate::NextExploreIndex(
 {
     assert(min_index <= max_index);
     if (0 == min_index) {
+        assert(0 == max_index);
         return 0; // no need explore
     }
 
@@ -154,7 +155,7 @@ uint64_t Replicate::NextExploreIndex(
         // only in rejected 
         uint64_t rejected_index = rejected_map_.at(follower_id);
         assert(0 < rejected_index);
-        if (rejected_index == min_index + 1) {
+        if (rejected_index <= min_index + 1) {
             logerr("INFO follower_id %u rejected_index %" PRIu64 " "
                     " min_index %" PRIu64, 
                     follower_id, rejected_index, min_index);
@@ -211,6 +212,10 @@ uint64_t Replicate::NextCatchUpIndex(
         // no info in accepted_map_ yet;
         if (rejected_map_.end() != rejected_map_.find(follower_id) &&
                 min_index >= rejected_map_.at(follower_id)) {
+            if (size_t{1} == min_index) {
+                return 1;
+            }
+
             logerr("IMPORTANT CATCH-UP HUP follower_id %u min_index %" 
                     PRIu64 " rejected_index %" PRIu64, 
                     follower_id, min_index, rejected_map_.at(follower_id));

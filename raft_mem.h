@@ -115,6 +115,9 @@ public:
             bool mark_broadcast, 
             raft::MessageType rsp_msg_type);
 
+
+    size_t CompactLog(uint64_t new_min_index);
+
 public:
     
     uint32_t GetSelfId() const {

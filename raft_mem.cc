@@ -946,10 +946,12 @@ onStepMessage(
                     msg.from(), !msg.reject(), msg.index());
             if (update) {
                 printf ( "follower_id %u msg.index %d reject %d\n", 
-                        msg.from(), static_cast<int>(msg.index()), msg.reject() );
+                        msg.from(), 
+                        static_cast<int>(msg.index()), msg.reject() );
                 next_catchup_index = replicate->NextCatchUpIndex(
                         msg.from(), 
-                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                        raft_state.GetMinIndex(), 
+                        raft_state.GetMaxIndex());
                 if (0 == next_catchup_index) {
                     logerr("INFO: follower_id %u CatchUp Stop at %" PRIu64, 
                             msg.from(), msg.index());
@@ -1164,6 +1166,8 @@ onBuildRsp(
             }
 
             rsp_msg->set_index(next_catchup_index);
+            rsp_msg->set_log_term(
+                    getLogTerm(raft_state, rsp_msg->index() - 1));
             int max_size = std::min<int>(
                     raft_state.GetMaxIndex() + 1 - next_catchup_index, 
                     10);
@@ -1858,6 +1862,23 @@ RaftMem::BroadcastHeartBeatMsg()
     return leader::onBuildRsp(
             *this, fake_msg, nullptr, nullptr, 
             true, raft::MessageType::MsgHeartbeat);
+}
+
+size_t RaftMem::CompactLog(uint64_t new_min_index)
+{
+    auto min_index = GetMinIndex();
+    if (new_min_index <= min_index) {
+        return 0;
+    }
+
+    if (new_min_index >= commit_) {
+        return 0;
+    }
+
+    int mem_idx = new_min_index - min_index;
+    assert(0 < mem_idx);
+    logs_.erase(logs_.begin(), logs_.begin() + mem_idx);
+    return mem_idx;
 }
 
 } // namespace raft

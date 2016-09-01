@@ -49,7 +49,7 @@ TEST(ReplicateTest, UpdateAccepted)
     assert(50 - 1 == replicate.GetAcceptedIndex(1));
     assert(0 == replicate.GetRejectedIndex(1));
 
-    replicate.Reset(3);
+    replicate.Fix(3);
     assert(3 == replicate.GetAcceptedIndex(1));
 }
 
@@ -123,10 +123,10 @@ TEST(ReplicateTest, ResetCommit)
     assert(2 == replicate.GetAcceptedIndex(3));
     assert(2 == replicate.GetRejectedIndex(4));
 
-    replicate.Reset(5);
+    replicate.Fix(5);
     assert(5 == replicate.GetAcceptedIndex(2));
     assert(2 == replicate.GetAcceptedIndex(3));
-    assert(0 == replicate.GetRejectedIndex(4));
+    assert(2 == replicate.GetRejectedIndex(4));
 }
 
 

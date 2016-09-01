@@ -99,7 +99,9 @@ bool RaftDisk::Update(
     update |= updateCommit(new_commit_index);
     update |= updateMinIndex(new_min_index);
     update |= updateMaxIndex(new_max_index);
-    assert(min_index_ <= commit_);
+    if (1 < min_index_) {
+        assert(min_index_ <= commit_);
+    }
     assert(commit_ <= max_index_);
     return update; 
 }
@@ -124,23 +126,33 @@ RaftDisk::Step(
     }
 
     assert(raft::RaftRole::LEADER == role_);
-    auto rsp_msg = cutils::make_unique<raft::Message>();
-    assert(nullptr != rsp_msg);
-    rsp_msg->set_type(rsp_msg_type);
-    rsp_msg->set_logid(logid_);
-    rsp_msg->set_from(selfid_);
-    rsp_msg->set_to(follower_id);
-    rsp_msg->set_term(term_);
 
     assert(nullptr != replicate_);
     replicate_->UpdateReplicateState(
             follower_id, !reject, next_log_index);
+    
+    int ret = 0;
+    std::unique_ptr<raft::Message> rsp_msg;
     if (raft::MessageType::MsgHeartbeat == rsp_msg_type) {
-        return stepHearbeatMsg(follower_id);
+        std::tie(ret, rsp_msg) = stepHearbeatMsg(follower_id);
+    }
+    else {
+        assert(raft::MessageType::MsgApp == rsp_msg_type);
+        std::tie(ret, rsp_msg) = stepAppMsg(follower_id);
     }
 
-    assert(raft::MessageType::MsgApp == rsp_msg_type);
-    return stepAppMsg(follower_id);
+    if (0 != ret) {
+        assert(nullptr == rsp_msg);
+        return std::make_tuple(ret, nullptr);
+    }
+
+    assert(0 == ret);
+    assert(nullptr != rsp_msg);
+    rsp_msg->set_term(term_);
+    rsp_msg->set_logid(logid_);
+    rsp_msg->set_to(follower_id);
+    rsp_msg->set_from(selfid_);
+    return std::make_tuple(0, std::move(rsp_msg));
 }
 
 std::tuple<int, std::unique_ptr<raft::Message>>
@@ -178,6 +190,7 @@ RaftDisk::stepHearbeatMsg(uint32_t follower_id)
     const auto& disk_entry = hard_state->entries(0);
     assert(disk_entry.index() == next_explore_index - 1);
     rsp_msg->set_log_term(disk_entry.term());
+    rsp_msg->set_type(raft::MessageType::MsgHeartbeat);
     return std::make_tuple(0, std::move(rsp_msg));
 }
 
@@ -241,7 +254,7 @@ RaftDisk::stepAppMsg(uint32_t follower_id)
         rsp_msg->set_log_term(hard_state->entries(0).term());
         for (int idx = 1; idx < hard_state->entries_size(); ++idx) {
             const auto& disk_entry = hard_state->entries(idx);
-            assert(disk_entry.index() == next_catchup_index + idx);
+            assert(disk_entry.index() == next_catchup_index + idx - 1);
             auto* rsp_entry = rsp_msg->add_entries();
             *rsp_entry = disk_entry;
             if (disk_entry.index() <= commit_) {
@@ -253,9 +266,40 @@ RaftDisk::stepAppMsg(uint32_t follower_id)
 
     assert(0 < rsp_msg->entries_size());
     assert(rsp_msg->entries_size() == max_size);
+    rsp_msg->set_type(raft::MessageType::MsgApp);
     return std::make_tuple(0, std::move(rsp_msg));
 }
 
+
+raft::RaftRole RaftDisk::GetRole()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return role_;
+}
+
+uint64_t RaftDisk::GetTerm()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return term_;
+}
+
+uint64_t RaftDisk::GetCommit() 
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return commit_;
+}
+
+uint64_t RaftDisk::GetMinIndex()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return min_index_;
+}
+
+uint64_t RaftDisk::GetMaxIndex()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return max_index_;
+}
     
 } // namespace raft;
 

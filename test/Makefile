@@ -71,6 +71,9 @@ mt_election_test: mt_election_test.o test_helper.o gtest_main.a ../libdraft.a
 mt_app_test: mt_app_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
+raft_disk_test: raft_disk_test.o test_helper.o gtest_main.a ../libdraft.a
+	$(BUILDEXE)
+
 %.pb.cc: %.proto
 	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=../raftpb/ $<
 
