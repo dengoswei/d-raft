@@ -56,6 +56,8 @@ public:
 
     const std::set<uint32_t>& GetVoteFollowerSet() const;
 
+    uint64_t GetLogTerm(uint64_t log_index) const;
+
     raft::Replicate* GetReplicate();
 
 private:

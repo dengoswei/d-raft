@@ -3,7 +3,7 @@ CPPFLAGS += -isystem $(GTEST_DIR)/include -std=c++11 -stdlib=libc++
 CXXFLAGS += -g -Wall -Wextra -D TEST_DEBUG
 
 
-TESTS = election_test follower_test candidate_test
+TESTS = election_test follower_test candidate_test leader_test replicate_test mt_election_test mt_app_test raft_disk_test
 
 INCLS += -I../ -I../raftpb 
 INCLS += -I../../cutils

@@ -118,13 +118,12 @@ uint64_t nextExploreIndex(
     return req_msg.index() + (rejected_index - req_msg.index()) / 2;
 }
 
-uint64_t calculateCommit(
+uint64_t calculateMajorReplicateIndex(
         const std::set<uint32_t>& vote_follower_set, 
         const raft::Replicate* replicate)
 {
     assert(nullptr != replicate);
     assert(size_t{2} <= vote_follower_set.size()); // exclude self;
-
     const size_t major_cnt = vote_follower_set.size() / 2 + 
         0 == vote_follower_set.size() % 2 ? 0 : 1;
 
@@ -143,6 +142,43 @@ uint64_t calculateCommit(
     // must be the case !!!
     return 0;
 }
+
+uint64_t calculateCommit(
+        const raft::RaftState& raft_state, 
+        const raft::Replicate* replicate)
+{
+    assert(nullptr != replicate);
+    auto vote_follower_set = raft_state.GetVoteFollowerSet();
+    assert(size_t{2} <= vote_follower_set.size());
+
+    // 
+    // raft paper:
+    // 3.6.2 committing entries from previous terms
+    // Raft never commits log entries from previous terms by counting
+    // replicas. Only log entries from the leader's current term 
+    // are commited by counting replicate; once an entry from the 
+    // current term has been commited in this way, the all prior 
+    // entries are commited indirectly because of the Log 
+    // Matching Property.
+    uint64_t major_repliate_index = 
+        calculateMajorReplicateIndex(vote_follower_set, replicate);
+    if (0 == major_repliate_index) {
+        return 0;
+    }
+
+    // TODO: new leader issue an no-op to trigger commit
+    // else
+    auto log_term = raft_state.GetLogTerm(major_repliate_index);
+    if (raft_state.GetTerm() == log_term) {
+        // major_replicate_index as commited_index
+        return major_repliate_index;
+    }
+
+    // else
+    assert(raft_state.GetTerm() > log_term);
+    return raft_state.GetCommit();
+}
+
 
 namespace follower {
 
@@ -730,6 +766,8 @@ onStepMessage(
             }
 
             // => UpdateVote => yes => reach major
+            // => new leader may issue an no-op to commited all the previous
+            //    log-term log entries;
             if (nullptr == soft_state) {
                 soft_state = cutils::make_unique<raft::SoftState>();
                 assert(nullptr != soft_state);
@@ -840,8 +878,9 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     raft::Replicate* replicate = raft_mem.GetReplicate();
     assert(nullptr != replicate);
     // TODO: for now
-    uint64_t replicate_commit = calculateCommit(
-            raft_mem.GetVoteFollowerSet(), replicate);
+    raft::RaftState raft_state(raft_mem, nullptr, nullptr);
+    uint64_t replicate_commit = 
+        calculateCommit(raft_state, replicate);
     if (raft_mem.GetCommit() < replicate_commit) {
         hard_state = cutils::make_unique<raft::HardState>();
         assert(nullptr != hard_state);
@@ -1008,8 +1047,8 @@ onStepMessage(
 
             assert(true == update);
             // TOOD: FIX
-            uint64_t replicate_commit = calculateCommit(
-                    raft_state.GetVoteFollowerSet(), replicate);
+            uint64_t replicate_commit = 
+                calculateCommit(raft_state, replicate);
             printf ( "TEST: replicate_commit %u commit %u\n", 
                     static_cast<int>(replicate_commit), 
                     static_cast<int>(raft_state.GetCommit()));
