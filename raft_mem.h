@@ -18,6 +18,7 @@ enum class RaftRole : uint32_t {
 };
 
 class Replicate;
+class RaftConfig;
 
 class RaftMem {
 
@@ -85,6 +86,9 @@ public:
 
 
 
+    // : 
+    // servers process incoming RPC requests without consulting 
+    // their current configurations.
     // bool for broad-cast
     std::tuple<
         std::unique_ptr<raft::HardState>, 
@@ -237,6 +241,7 @@ private:
     uint64_t disk_max_index_ = 0;
     std::unique_ptr<raft::Replicate> disk_replicate_;
 
+    std::unique_ptr<raft::RaftConfig> config_;
     std::set<uint32_t> vote_follower_set_;
 }; // class RaftMem
 

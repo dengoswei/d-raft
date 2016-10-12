@@ -83,6 +83,8 @@ message Message {
 	optional Snapshot    snapshot    = 11;
 	optional bool        reject      = 12;
 	optional uint64      reject_hint = 13;
+
+    optional bool        disk_mark = 14;
 }
 
 message SoftState {
@@ -98,22 +100,6 @@ message HardState {
 }
 
 message ConfState {
-	repeated uint64 nodes = 1;
+	repeated uint32 nodes = 1;
 }
-
-enum ConfChangeType {
-	ConfChangeAddNode    = 0;
-	ConfChangeRemoveNode = 1;
-	ConfChangeUpdateNode = 2;
-    ConfChangeAddCatchUpNode    = 3;
-    ConfChangeRemoveCatchUpNode = 4;
-}
-
-message ConfChange {
-	optional uint64          id       = 1;
-	optional ConfChangeType  type     = 2;
-	optional uint64          node_id  = 3;
-	optional bytes           context  = 4;
-}
-
 

@@ -4,12 +4,34 @@
 #include "replicate.h"
 #include "raft_mem.h"
 #include "raft_state.h"
+#include "raft_config.h"
 
 
 namespace {
 
 using namespace raft;
 
+void defaultConfig(raft::RaftConfig& config)
+{
+    assert(true == config.GetNodeSet().empty());
+    raft::ConfState default_state;
+    for (uint32_t node = 1; node <= 3; ++node) {
+        default_state.add_nodes(node);
+    }
+
+    config.Apply(&default_state, true);
+    assert(size_t{3} == config.GetNodeSet().size());
+}
+
+void updateVoteFollowerSet(
+        uint32_t selfid, 
+        const raft::RaftConfig& config, 
+        std::set<uint32_t>& vote_follower_set)
+{
+    std::set<uint32_t> new_vote_follower_set = config.GetNodeSet();
+    new_vote_follower_set.erase(selfid);
+    vote_follower_set.swap(new_vote_follower_set);
+}
 
 void updateHardState(
         raft::RaftMem& raft_mem, 
@@ -143,6 +165,11 @@ uint64_t calculateMajorReplicateIndex(
     return 0;
 }
 
+
+// :
+// there will be a period of time(while it is committing Cnew) when a
+// leader can manage a cluster taht does not include itself; it replicates
+// log entries but does not count itself in majorities. 
 uint64_t calculateCommit(
         const raft::RaftState& raft_state, 
         const raft::Replicate* replicate)
@@ -391,6 +418,14 @@ onStepMessage(
     }
 
     assert(msg.term() >= term);
+    // TODO :
+    // Disruptive servers
+    // Raft's solution uses heartbeats to determine when a valid leader
+    // exists. 
+    // =>
+    // if a server receives a RequestVote request within the minimum election
+    // timeout of hearing from a current leader, it does not update its term
+    // or grant its vote.
     if (msg.term() > term) {
        if (nullptr == hard_state) {
             hard_state = cutils::make_unique<raft::HardState>();
@@ -656,6 +691,13 @@ onBuildRsp(
 
 namespace candidate {
 
+
+// :
+// a server that is not part of its own latest configuration should still
+// start new elections, as it might still be needed until the Cnew entry 
+// is committed!
+// => it does not count its own vote in elections unless it is part of its
+// latest configuration.!
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
@@ -1259,7 +1301,8 @@ onBuildRsp(
 
             auto next_explore_index = 
                 replicate->NextExploreIndex(
-                        req_msg.from(), raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                        req_msg.from(), 
+                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
             if (0 == next_explore_index) {
                 // invalid term => rsp with heart beat
                 rsp_msg->set_index(raft_mem.GetMaxIndex() + 1);
@@ -1272,7 +1315,7 @@ onBuildRsp(
                 break;
             }
 
-            assert(0 < next_explore_index);
+            assert(1 < next_explore_index);
             assert(raft_state.GetMinIndex() < next_explore_index);
             assert(next_explore_index <= raft_state.GetMaxIndex() + 1);
 
@@ -1327,18 +1370,25 @@ RaftMem::RaftMem(
     , selfid_(selfid)
     , election_timeout_(election_timeout_ms)
     , active_time_(std::chrono::system_clock::now())
+    , config_(nullptr)
 {
     map_timeout_handler_[raft::RaftRole::FOLLOWER] = follower::onTimeout;
     map_timeout_handler_[raft::RaftRole::CANDIDATE] = candidate::onTimeout;
     map_timeout_handler_[raft::RaftRole::LEADER] = leader::onTimeout;
 
-    map_step_handler_[raft::RaftRole::FOLLOWER] = follower::onStepMessage;
-    map_step_handler_[raft::RaftRole::CANDIDATE] = candidate::onStepMessage;
-    map_step_handler_[raft::RaftRole::LEADER] = leader::onStepMessage;
+    map_step_handler_[
+        raft::RaftRole::FOLLOWER] = follower::onStepMessage;
+    map_step_handler_[
+        raft::RaftRole::CANDIDATE] = candidate::onStepMessage;
+    map_step_handler_[
+        raft::RaftRole::LEADER] = leader::onStepMessage;
 
-    map_build_rsp_handler_[raft::RaftRole::FOLLOWER] = follower::onBuildRsp;
-    map_build_rsp_handler_[raft::RaftRole::CANDIDATE] = candidate::onBuildRsp;
-    map_build_rsp_handler_[raft::RaftRole::LEADER] = leader::onBuildRsp;
+    map_build_rsp_handler_[
+        raft::RaftRole::FOLLOWER] = follower::onBuildRsp;
+    map_build_rsp_handler_[
+        raft::RaftRole::CANDIDATE] = candidate::onBuildRsp;
+    map_build_rsp_handler_[
+        raft::RaftRole::LEADER] = leader::onBuildRsp;
 
     replicate_ = cutils::make_unique<raft::Replicate>();
     assert(nullptr != replicate_);
@@ -1346,9 +1396,12 @@ RaftMem::RaftMem(
     disk_replicate_ = cutils::make_unique<raft::Replicate>();
     assert(nullptr != disk_replicate_);
 
-    vote_follower_set_ = {1, 2, 3};
-    assert(vote_follower_set_.end() != vote_follower_set_.find(selfid_));
-    vote_follower_set_.erase(selfid_);
+    config_ = cutils::make_unique<raft::RaftConfig>();
+    assert(nullptr != config_);
+    // TODO: for test
+    defaultConfig(*config_);
+
+    updateVoteFollowerSet(selfid_, *config_, vote_follower_set_);
 }
 
 RaftMem::~RaftMem() = default;
