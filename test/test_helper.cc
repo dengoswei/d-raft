@@ -314,3 +314,20 @@ build_raft_disk(uint32_t id, FakeDiskStorage& storage)
     return raft_disk;
 }
 
+
+std::unique_ptr<raft::RaftDiskCatchUp>
+build_raft_disk_c(
+        uint32_t selfid, uint32_t catch_up_id, 
+        uint64_t term, uint64_t max_index, uint64_t min_index, 
+        FakeDiskStorage& storage)
+{
+    auto raft_disk_c = 
+        cutils::make_unique<raft::RaftDiskCatchUp>(
+                1, selfid, catch_up_id, term, max_index, min_index, 
+                [&](uint64_t logid, uint64_t log_index, int entries_size)
+                    -> std::tuple<int, std::unique_ptr<raft::HardState>> {
+                    return storage.Read(logid, log_index, entries_size);
+                });
+    assert(nullptr != raft_disk_c);
+    return raft_disk_c;
+}

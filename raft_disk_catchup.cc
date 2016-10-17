@@ -25,6 +25,7 @@ RaftDiskCatchUp::RaftDiskCatchUp(
     assert(0 < logid_);
     assert(0 < selfid_);
     assert(0 < catch_up_id_);
+    assert(selfid_ != catch_up_id_);
     assert(0 < term_);
     assert(0 < max_index_);
     assert(nullptr != readcb_);
@@ -36,10 +37,15 @@ RaftDiskCatchUp::~RaftDiskCatchUp() = default;
 std::tuple<int, std::unique_ptr<raft::Message>>
 RaftDiskCatchUp::Step(const raft::Message& msg)
 {
+    if (false == msg.has_disk_mark() || 
+            false == msg.disk_mark()) {
+        logerr("logid %" PRIu64 " from %u to %u missing disk_mark", 
+                msg.logid(), msg.from(), msg.to());
+        return std::make_tuple(-1, nullptr);
+    }
+
     assert(msg.has_disk_mark());
     assert(msg.disk_mark());
-
-    // TODO
     if (msg.term() != term_) {
         logerr("logid %" PRIu64 " msg.term %" PRIu64 " term_ %" PRIu64, 
                 msg.logid(), msg.term(), term_);

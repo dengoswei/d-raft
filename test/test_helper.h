@@ -7,6 +7,7 @@
 #include "raft.pb.h"
 #include "mem_utils.h"
 #include "raft_disk.h"
+#include "raft_disk_catchup.h"
 
 
 std::unique_ptr<raft::RaftMem>
@@ -169,3 +170,8 @@ private:
 std::unique_ptr<raft::RaftDisk>
 build_raft_disk(uint32_t id, FakeDiskStorage& storage);
 
+std::unique_ptr<raft::RaftDiskCatchUp>
+build_raft_disk_c(
+        uint32_t selfid, uint32_t catch_up_id, 
+        uint64_t term, uint64_t max_index, uint64_t min_index, 
+        FakeDiskStorage& storage);

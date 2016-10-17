@@ -264,6 +264,20 @@ raft::Replicate* RaftState::GetReplicate()
     return raft_mem_.GetReplicate();
 }
 
+uint64_t RaftState::GetLogTerm(uint64_t log_index) const 
+{
+    uint64_t min_index = GetMinIndex();
+    assert(min_index <= log_index);
+    assert(log_index <= GetMaxIndex());
+    int mem_idx = log_index - min_index;
+    assert(0 <= mem_idx);
+
+    auto mem_entry = At(mem_idx);
+    assert(nullptr != mem_entry);
+    assert(mem_entry->index() == log_index);
+    return mem_entry->term();
+}
+
 } // namespace raft;
 
 
