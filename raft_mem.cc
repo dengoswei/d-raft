@@ -662,6 +662,11 @@ onBuildRsp(
                         static_cast<int>(req_msg.index()), 
                         static_cast<int>(rsp_msg->index()) );
             }
+
+            if (req_msg.has_disk_mark() && req_msg.disk_mark()) {
+                rsp_msg->set_disk_mark(true);
+            }
+
         }
         break;
     
@@ -1022,66 +1027,91 @@ onStepMessage(
             assert(nullptr != disk_replicate);
 
             mark_broadcast = false;
-            uint64_t next_catchup_index = 0;
-            bool update = replicate->UpdateReplicateState(
-                    msg.from(), !msg.reject(), msg.index());
-            if (update) {
-                printf ( "follower_id %u msg.index %d reject %d\n", 
+            bool update = 
+                replicate->UpdateReplicateState(
+                        msg.from(), !msg.reject(), msg.index());
+
+            auto next_catchup_index = replicate->NextCatchUpIndex(
+                    msg.from(), 
+                    raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+            if (0 != next_catchup_index) {
+                rsp_msg_type = raft::MessageType::MsgApp;
+            }
+            else {
+                assert(0 == next_catchup_index);
+                auto next_explore_index = replicate->NextExploreIndex(
                         msg.from(), 
-                        static_cast<int>(msg.index()), msg.reject() );
-                next_catchup_index = replicate->NextCatchUpIndex(
-                        msg.from(), 
-                        raft_state.GetMinIndex(), 
-                        raft_state.GetMaxIndex());
-                if (0 == next_catchup_index) {
-                    logerr("INFO: follower_id %u CatchUp Stop at %" PRIu64, 
-                            msg.from(), msg.index());
-                    if (disk_replicate->UpdateReplicateState(
-                                msg.from(), !msg.reject(), msg.index())) {
-                        next_catchup_index = disk_replicate->NextCatchUpIndex(
-                                msg.from(), 
-                                raft_mem.GetDiskMinIndex(), 
-                                raft_mem.GetDiskMaxIndex());
-                        if (0 != next_catchup_index) {
-                            rsp_msg_type = raft::MessageType::MsgApp;
-                            need_disk_replicate = true;
-                        }
-                    }
-                }
-                else {
-                    rsp_msg_type = raft::MessageType::MsgApp;
+                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+                if (0 != next_explore_index) {
+                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
                 }
             }
 
-            if (0 == next_catchup_index && msg.reject()) {
-                assert(false == need_disk_replicate);
-                assert(raft::MessageType::MsgNull == rsp_msg_type);
-                // try to switch to MsgHeartbeat explore
-                auto next_explore_index = 
-                    replicate->NextExploreIndex(
-                        msg.from(), 
-                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
-                if (0 == next_explore_index) {
-                    logerr("INFO: follower_id %u no need explore "
-                            "index %" PRIu64, 
-                            msg.from(), msg.index());
-                    next_explore_index = 
-                        disk_replicate->NextExploreIndex(
-                                msg.from(), 
-                                raft_mem.GetDiskMinIndex(), 
-                                raft_mem.GetDiskMaxIndex());
-                    if (0 != next_explore_index) {
-                        rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                        need_disk_replicate = true;
-                    }
-                }
-                else {
-                    assert(0 < next_explore_index);
+            if (raft::MessageType::MsgNull == rsp_msg_type) {
+                if (msg.reject() && 
+                        (raft_state.GetMinIndex() + 1 >= msg.index())) {
+                    need_disk_replicate = true;
                     rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                    logerr("INFO: follower_id %u switch CATCH-UP TO EXPLORE", 
-                            msg.from());
                 }
             }
+
+//            if (update) {
+//                printf ( "follower_id %u msg.index %d reject %d\n", 
+//                        msg.from(), 
+//                        static_cast<int>(msg.index()), msg.reject() );
+//                next_catchup_index = replicate->NextCatchUpIndex(
+//                        msg.from(), 
+//                        raft_state.GetMinIndex(), 
+//                        raft_state.GetMaxIndex());
+//                if (0 == next_catchup_index) {
+//                    logerr("INFO: follower_id %u CatchUp Stop at %" PRIu64, 
+//                            msg.from(), msg.index());
+//                    if (disk_replicate->UpdateReplicateState(
+//                                msg.from(), !msg.reject(), msg.index())) {
+//                        next_catchup_index = disk_replicate->NextCatchUpIndex(
+//                                msg.from(), 
+//                                raft_mem.GetDiskMinIndex(), 
+//                                raft_mem.GetDiskMaxIndex());
+//                        if (0 != next_catchup_index) {
+//                            rsp_msg_type = raft::MessageType::MsgApp;
+//                            need_disk_replicate = true;
+//                        }
+//                    }
+//                }
+//                else {
+//                    rsp_msg_type = raft::MessageType::MsgApp;
+//                }
+//            }
+//
+//            if (0 == next_catchup_index && msg.reject()) {
+//                assert(false == need_disk_replicate);
+//                assert(raft::MessageType::MsgNull == rsp_msg_type);
+//                // try to switch to MsgHeartbeat explore
+//                auto next_explore_index = 
+//                    replicate->NextExploreIndex(
+//                        msg.from(), 
+//                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+//                if (0 == next_explore_index) {
+//                    logerr("INFO: follower_id %u no need explore "
+//                            "index %" PRIu64, 
+//                            msg.from(), msg.index());
+//                    next_explore_index = 
+//                        disk_replicate->NextExploreIndex(
+//                                msg.from(), 
+//                                raft_mem.GetDiskMinIndex(), 
+//                                raft_mem.GetDiskMaxIndex());
+//                    if (0 != next_explore_index) {
+//                        rsp_msg_type = raft::MessageType::MsgHeartbeat;
+//                        need_disk_replicate = true;
+//                    }
+//                }
+//                else {
+//                    assert(0 < next_explore_index);
+//                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
+//                    logerr("INFO: follower_id %u switch CATCH-UP TO EXPLORE", 
+//                            msg.from());
+//                }
+//            }
 
             if (false == update) {
                 break;
@@ -1116,53 +1146,81 @@ onStepMessage(
             assert(nullptr != disk_replicate);
 
             mark_broadcast = false;
-            if (replicate->UpdateReplicateState(
-                        msg.from(), !msg.reject(), msg.index())) {
-                auto next_explore_index = 
-                    replicate->NextExploreIndex(
-                            msg.from(), 
-                            raft_state.GetMinIndex(), raft_state.GetMaxIndex());
-                if (0 != next_explore_index) {
-                    assert(next_explore_index != msg.index());
-                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                    break;
-                }
 
-                assert(0 == next_explore_index);
-                if (disk_replicate->UpdateReplicateState(
-                            msg.from(), !msg.reject(), msg.index())) {
-                    next_explore_index = 
-                        disk_replicate->NextExploreIndex(
-                                msg.from(), 
-                                raft_mem.GetDiskMinIndex(), 
-                                raft_mem.GetDiskMaxIndex());
-                    if (0 != next_explore_index) {
-                        rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                        need_disk_replicate = true;
-                        break;
-                    }
-                }
-            }
-
-            auto next_catchup_index = replicate->NextCatchUpIndex(
+            replicate->UpdateReplicateState(
+                    msg.from(), !msg.reject(), msg.index());
+            auto next_explore_index = replicate->NextExploreIndex(
                     msg.from(), 
                     raft_state.GetMinIndex(), raft_state.GetMaxIndex());
-            if (0 == next_catchup_index) {
-                // do nothing
-                logerr("INFO: EXPLORE STOP follower_id %u msg.index %" PRIu64, 
-                        msg.from(), msg.index());
-                next_catchup_index = disk_replicate->NextCatchUpIndex(
+            if (0 != next_explore_index) {
+                rsp_msg_type = raft::MessageType::MsgHeartbeat;
+            }
+            else {
+                assert(0 == next_explore_index);
+                auto next_catchup_index = replicate->NextCatchUpIndex(
                         msg.from(), 
-                        raft_mem.GetDiskMinIndex(), raft_mem.GetDiskMaxIndex());
+                        raft_state.GetMinIndex(), raft_state.GetMaxIndex());
                 if (0 != next_catchup_index) {
                     rsp_msg_type = raft::MessageType::MsgApp;
-                    need_disk_replicate = true;
                 }
-                break;
             }
 
-            assert(0 < next_catchup_index);
-            rsp_msg_type = raft::MessageType::MsgApp;
+            if (raft::MessageType::MsgNull == rsp_msg_type) {
+                if (msg.reject() &&
+                        (raft_state.GetMinIndex() + 1 >= msg.index())) {
+                    need_disk_replicate = true;
+                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
+                }
+            }
+
+
+//            if (replicate->UpdateReplicateState(
+//                        msg.from(), !msg.reject(), msg.index())) {
+//                auto next_explore_index = 
+//                    replicate->NextExploreIndex(
+//                            msg.from(), 
+//                            raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+//                if (0 != next_explore_index) {
+//                    assert(next_explore_index != msg.index());
+//                    rsp_msg_type = raft::MessageType::MsgHeartbeat;
+//                    break;
+//                }
+//
+//                assert(0 == next_explore_index);
+//                if (disk_replicate->UpdateReplicateState(
+//                            msg.from(), !msg.reject(), msg.index())) {
+//                    next_explore_index = 
+//                        disk_replicate->NextExploreIndex(
+//                                msg.from(), 
+//                                raft_mem.GetDiskMinIndex(), 
+//                                raft_mem.GetDiskMaxIndex());
+//                    if (0 != next_explore_index) {
+//                        rsp_msg_type = raft::MessageType::MsgHeartbeat;
+//                        need_disk_replicate = true;
+//                        break;
+//                    }
+//                }
+//            }
+//
+//            auto next_catchup_index = replicate->NextCatchUpIndex(
+//                    msg.from(), 
+//                    raft_state.GetMinIndex(), raft_state.GetMaxIndex());
+//            if (0 == next_catchup_index) {
+//                // do nothing
+//                logerr("INFO: EXPLORE STOP follower_id %u msg.index %" PRIu64, 
+//                        msg.from(), msg.index());
+//                next_catchup_index = disk_replicate->NextCatchUpIndex(
+//                        msg.from(), 
+//                        raft_mem.GetDiskMinIndex(), raft_mem.GetDiskMaxIndex());
+//                if (0 != next_catchup_index) {
+//                    rsp_msg_type = raft::MessageType::MsgApp;
+//                    need_disk_replicate = true;
+//                }
+//                break;
+//            }
+//
+//            assert(0 < next_catchup_index);
+//            rsp_msg_type = raft::MessageType::MsgApp;
             logerr("INFO: follower_id %u switch EXPLORE TO CATCH-UP", 
                     msg.from());
         }

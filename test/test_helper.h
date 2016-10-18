@@ -16,8 +16,8 @@ build_raft_mem(
         uint64_t term, uint64_t commit_index, raft::RaftRole role);
 
 std::unique_ptr<raft::RaftMem> 
-    build_raft_mem(
-            uint64_t term, uint64_t commit_index, raft::RaftRole role);
+build_raft_mem(
+        uint64_t term, uint64_t commit_index, raft::RaftRole role);
 
 std::unique_ptr<raft::Message> 
 build_to_msg(
@@ -111,6 +111,7 @@ public:
             auto entry = cutils::make_unique<raft::Entry>();
             assert(nullptr != entry);
             *entry = hard_state.entries(idx);
+            printf("%s idx %d index %u\n", __func__, idx, (uint32_t)entry->index());
             logs_.push_back(std::move(entry));
         }
 
@@ -118,7 +119,7 @@ public:
     }
 
     std::tuple<int, std::unique_ptr<raft::HardState>>
-        Read(uint64_t logid, uint64_t log_index, int entries_size)
+    Read(uint64_t logid, uint64_t log_index, int entries_size)
     {
         assert(0 < log_index);
         if (logs_.empty()) {
@@ -135,9 +136,13 @@ public:
             return std::make_tuple(-1, nullptr);
         }
 
+        printf ( "%s log_index %u min_index %u max_index %u\n", 
+                __func__, (uint32_t)log_index, (uint32_t)min_index, (uint32_t)max_index );
         int idx = log_index - min_index;
         auto hard_state = cutils::make_unique<raft::HardState>();
         assert(nullptr != hard_state);
+        printf ( "entries_size %d min %d\n", 
+                entries_size, (int)max_index - log_index + 1);
         entries_size = std::min<int>(entries_size, max_index - log_index + 1);
         for (; idx < (log_index - min_index) + entries_size; ++idx) {
             const auto& disk_entry = logs_[idx];
