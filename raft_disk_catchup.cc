@@ -132,7 +132,7 @@ RaftDiskCatchUp::step(const raft::Message& msg)
         break;
     case raft::MessageType::MsgHeartbeatResp:
         {
-            bool update = replicate_.UpdateReplicateState(
+            replicate_.UpdateReplicateState(
                     msg.from(), !msg.reject(), msg.index());
 
             auto next_explore_index = 

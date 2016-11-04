@@ -72,7 +72,10 @@ TEST(CandidateTest, InvalidTerm)
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgNull == rsp_msg_type);
         assert(false == need_disk_replicate);
-        assert(null_msg->term() == hard_state->term());
+
+        assert(hard_state->has_meta());
+        assert(hard_state->meta().has_term());
+        assert(null_msg->term() == hard_state->meta().term());
         assert(raft::RaftRole::FOLLOWER == 
                 static_cast<raft::RaftRole>(soft_state->role()));
         assert(false == soft_state->has_leader_id());
@@ -169,8 +172,10 @@ TEST(CandidateTest, BecomeLeader)
     assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
     assert(false == need_disk_replicate);
 
-    assert(hard_state->has_vote());
-    assert(raft_mem->GetSelfId() == hard_state->vote());
+    assert(hard_state->has_meta());
+    assert(hard_state->meta().has_vote());
+    assert(hard_state->meta().has_term());
+    assert(raft_mem->GetSelfId() == hard_state->meta().vote());
     assert(0 == hard_state->entries_size());
 
     assert(raft::RaftRole::LEADER == 

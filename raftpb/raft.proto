@@ -92,11 +92,18 @@ message SoftState {
     optional uint64 leader_id = 2;
 }
 
-message HardState {
+message MetaInfo {
     optional uint64 term = 1;
     optional uint64 vote = 2;
-    repeated Entry  entries = 3;
-    optional uint64 commit  = 4;
+    optional uint64 commit = 3;
+    // on disk: [min_index, max_index];
+    optional uint64 min_index = 4;
+    optional uint64 max_index = 5;
+}
+
+message HardState {
+    optional MetaInfo meta = 1;
+    repeated Entry  entries   = 2;
 }
 
 message ConfState {

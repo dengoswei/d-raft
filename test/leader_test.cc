@@ -67,7 +67,9 @@ TEST(LeaderTest, InvalidTerm)
         assert(false == mark_broadcast);
         assert(raft::MessageType::MsgNull == rsp_msg_type);
         assert(false == need_disk_replicate);
-        assert(null_msg->term() == hard_state->term());
+        assert(hard_state->has_meta());
+        assert(hard_state->meta().has_term());
+        assert(null_msg->term() == hard_state->meta().term());
         assert(raft::RaftRole::FOLLOWER == 
                 static_cast<raft::RaftRole>(soft_state->role()));
         assert(false == soft_state->has_leader_id());
@@ -360,10 +362,15 @@ TEST(LeaderTest, OutdateMsgHeartbeatReject)
 
     auto hard_state = cutils::make_unique<raft::HardState>();
     assert(nullptr != hard_state);
-    hard_state->set_term(raft_mem->GetTerm() + 1);
+    {
+        auto meta = hard_state->mutable_meta();
+        assert(nullptr != meta);
+        meta->set_term(raft_mem->GetTerm() + 1);
+        meta->set_vote(0);
+    }
     for (int idx = 0; idx < 10; ++idx) {
         add_entries(hard_state, 
-                hard_state->term(), raft_mem->GetMaxIndex() + 1 + idx);
+                hard_state->meta().term(), raft_mem->GetMaxIndex() + 1 + idx);
     }
 
     raft_mem->ApplyState(std::move(hard_state), nullptr);

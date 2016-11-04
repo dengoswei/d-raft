@@ -63,10 +63,12 @@ TEST(ElectionTest, FollowerStepTimeout)
         assert(true == mark_broadcast);
         assert(raft::MessageType::MsgVote == rsp_msg_type);
 
-        assert(raft.GetTerm() + 1 == hard_state->term());
-        assert(0 == hard_state->vote());
+        assert(hard_state->has_meta());
+        assert(raft.GetTerm() + 1 == hard_state->meta().term());
+        assert(hard_state->meta().has_vote());
+        assert(false == hard_state->meta().has_commit());
+        assert(0 == hard_state->meta().vote());
         assert(0 == hard_state->entries_size());
-        assert(0 == hard_state->commit());
 
         assert(raft::RaftRole::CANDIDATE == 
                 static_cast<raft::RaftRole>(soft_state->role()));
@@ -84,7 +86,7 @@ TEST(ElectionTest, FollowerStepTimeout)
         assert(rsp_msg->logid() == raft.GetLogId());
         assert(0 == rsp_msg->to());
         assert(raft.GetSelfId() == rsp_msg->from());
-        assert(hard_state->term() == rsp_msg->term());
+        assert(hard_state->meta().term() == rsp_msg->term());
         assert(rsp_msg->has_index());
         assert(1 == rsp_msg->index());
         assert(rsp_msg->has_log_term());
@@ -137,10 +139,11 @@ TEST(ElectionTest, ZeroSuccElection)
         assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
         assert(false == need_disk_replicate);
 
-        assert(raft.GetTerm() == hard_state->term());
-        assert(raft.GetSelfId() == hard_state->vote());
+        assert(hard_state->has_meta());
+        assert(raft.GetTerm() == hard_state->meta().term());
+        assert(raft.GetSelfId() == hard_state->meta().vote());
         assert(0 == hard_state->entries_size());
-        assert(0 == hard_state->commit());
+        assert(false == hard_state->meta().has_commit());
 
         assert(raft::RaftRole::LEADER == 
                 static_cast<raft::RaftRole>(soft_state->role()));
@@ -369,8 +372,10 @@ TEST(ElectionTest, StepTimeoutAfterAllReject)
         assert(nullptr == soft_state);
         assert(true == mark_broadcast);
         assert(raft::MessageType::MsgVote == rsp_msg_type);
-        assert(uint64_t{2} == hard_state->term());
-        assert(0 == hard_state->vote());
+        assert(hard_state->has_meta());
+        assert(uint64_t{2} == hard_state->meta().term());
+        assert(hard_state->meta().has_vote());
+        assert(0 == hard_state->meta().vote());
 
         assert(0 == raft_mem.GetVoteCount());
 

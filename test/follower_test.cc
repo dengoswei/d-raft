@@ -21,23 +21,26 @@ TEST(FollowerTest, SimpleConstruct)
 
 TEST(FollowerTest, IgnoreMsg)
 {
-    raft::RaftMem raft_mem(1, 1, 100);
+//    raft::RaftMem raft_mem(1, 1, 100);
+//
+//    {
+//        std::unique_ptr<raft::HardState> hard_state = 
+//            cutils::make_unique<raft::HardState>();
+//        assert(nullptr != hard_state);
+//        hard_state->set_term(1);
+//        hard_state->set_vote(0);
+//        hard_state->set_commit(0);
+//        raft_mem.ApplyState(std::move(hard_state), nullptr);
+//        assert(uint64_t{1} == raft_mem.GetTerm());
+//    }
 
-    {
-        std::unique_ptr<raft::HardState> hard_state = 
-            cutils::make_unique<raft::HardState>();
-        assert(nullptr != hard_state);
-        hard_state->set_term(1);
-        hard_state->set_vote(0);
-        hard_state->set_commit(0);
-        raft_mem.ApplyState(std::move(hard_state), nullptr);
-        assert(uint64_t{1} == raft_mem.GetTerm());
-    }
+    auto raft_mem = build_raft_mem(1, 1, 0, raft::RaftRole::FOLLOWER);
+    assert(nullptr != raft_mem);
 
     raft::Message null_msg;
     null_msg.set_type(raft::MessageType::MsgNull);
-    null_msg.set_logid(raft_mem.GetLogId());
-    null_msg.set_to(raft_mem.GetSelfId());
+    null_msg.set_logid(raft_mem->GetLogId());
+    null_msg.set_to(raft_mem->GetSelfId());
     null_msg.set_term(1);
 
     std::unique_ptr<raft::HardState> hard_state;
@@ -49,7 +52,7 @@ TEST(FollowerTest, IgnoreMsg)
     std::tie(hard_state, 
             soft_state, mark_broadcast, rsp_msg_type, 
             need_disk_replicate) = 
-        raft_mem.Step(null_msg, nullptr, nullptr);
+        raft_mem->Step(null_msg, nullptr, nullptr);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
     assert(false == mark_broadcast);
@@ -82,7 +85,8 @@ TEST(FollowerTest, InvalidTerm)
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
     assert(false == need_disk_replicate);
-    assert(null_msg.term() == hard_state->term());
+    assert(hard_state->has_meta());
+    assert(null_msg.term() == hard_state->meta().term());
     raft_mem.ApplyState(std::move(hard_state), nullptr);
 
     // case 2
@@ -134,9 +138,10 @@ TEST(FollowerTest, MsgVoteYes)
     assert(false == mark_broadcast);
     assert(raft::MessageType::MsgVoteResp == rsp_msg_type);
     assert(false == need_disk_replicate);
-    assert(2 == hard_state->vote());
-    assert(raft_mem->GetCommit() == hard_state->commit());
-    assert(raft_mem->GetTerm() == hard_state->term());
+    assert(hard_state->has_meta());
+    assert(2 == hard_state->meta().vote());
+    // assert(raft_mem->GetCommit() == hard_state->commit());
+    assert(raft_mem->GetTerm() == hard_state->meta().term());
     assert(0 == hard_state->entries_size());
 
     auto rsp_msg = raft_mem->BuildRspMsg(
@@ -252,7 +257,11 @@ TEST(FollowerTest, HeartBeatRspReject)
         entry->set_index(raft_mem->GetCommit() + 1);
         entry->set_reqid(0);
 
-        hard_state->set_term(raft_mem->GetTerm() + 1);
+        {
+            auto meta = hard_state->mutable_meta();
+            assert(nullptr != meta);
+            meta->set_term(raft_mem->GetTerm() + 1);
+        }
         raft_mem->ApplyState(std::move(hard_state), nullptr);
         assert(uint64_t{11} == raft_mem->GetMaxIndex());
     }
@@ -299,7 +308,9 @@ TEST(FollowerTest, OutdateHeartBeat)
         std::unique_ptr<raft::HardState> 
             hard_state = cutils::make_unique<raft::HardState>();
         assert(nullptr != hard_state);
-        hard_state->set_term(raft_mem->GetTerm() + 10);
+        auto meta = hard_state->mutable_meta();
+        assert(nullptr != meta);
+        meta->set_term(raft_mem->GetTerm() + 10);
         raft_mem->ApplyState(std::move(hard_state), nullptr);
     }
 
@@ -425,7 +436,10 @@ TEST(FollowerTest, AppReject)
             hard_state = cutils::make_unique<raft::HardState>();
         assert(nullptr != hard_state);
         add_entries(hard_state, raft_mem->GetTerm(), 1);
-        hard_state->set_term(raft_mem->GetTerm() + 1);
+
+        auto meta = hard_state->mutable_meta();
+        assert(nullptr != meta);
+        meta->set_term(raft_mem->GetTerm() + 1);
         raft_mem->ApplyState(std::move(hard_state), nullptr);
     }
 
@@ -566,8 +580,10 @@ TEST(FollowerTest, FollowerToCandidate)
     assert(true == mark_broadcast);
     assert(raft::MessageType::MsgVote == rsp_msg_type);
 
-    assert(raft_mem->GetTerm() + 1 == hard_state->term());
-    assert(0 == hard_state->vote());
+    assert(hard_state->has_meta());
+    assert(raft_mem->GetTerm() + 1 == hard_state->meta().term());
+    assert(hard_state->meta().has_vote());
+    assert(0 == hard_state->meta().vote());
     assert(0 == hard_state->entries_size());
 
     assert(raft::RaftRole::CANDIDATE == 
@@ -578,7 +594,7 @@ TEST(FollowerTest, FollowerToCandidate)
     fake_msg.set_type(raft::MessageType::MsgNull);
     fake_msg.set_logid(raft_mem->GetLogId());
     fake_msg.set_to(raft_mem->GetSelfId());
-    fake_msg.set_term(hard_state->term());
+    fake_msg.set_term(hard_state->meta().term());
     auto rsp_msg = raft_mem->BuildRspMsg(
             fake_msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
     assert(nullptr != rsp_msg);

@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <chrono>
+#include <set>
 #include <deque>
 #include <tuple>
 #include <stdint.h>
@@ -188,11 +189,6 @@ public:
         return disk_min_index_;
     }
 
-    uint64_t GetDiskMaxIndex() const {
-        return disk_max_index_;
-    }
-
-
 private:
     void setRole(uint64_t next_term, uint32_t role);
 
@@ -202,11 +198,16 @@ private:
 
     void updateTerm(uint64_t new_term);
 
-    std::deque<std::unique_ptr<Entry>>::iterator findLogEntry(uint64_t index);
+    void updateCommit(uint64_t new_commit);
+
+    void updateDiskMinIndex(uint64_t next_disk_min_index);
+
+    void updateMetaInfo(const raft::MetaInfo& metainfo);
+
+    std::deque<std::unique_ptr<Entry>>::iterator 
+        findLogEntry(uint64_t index);
 
     void appendLogEntries(std::unique_ptr<raft::HardState> hard_state);
-
-    void updateLogEntries(std::unique_ptr<raft::HardState> hard_state);
 
     void applyHardState(std::unique_ptr<raft::HardState> hard_state);
 
@@ -238,12 +239,12 @@ private:
     std::unique_ptr<raft::Replicate> replicate_;
 
     uint64_t disk_min_index_ = 0;
-    uint64_t disk_max_index_ = 0;
     std::unique_ptr<raft::Replicate> disk_replicate_;
 
     std::unique_ptr<raft::RaftConfig> config_;
     std::set<uint32_t> vote_follower_set_;
 }; // class RaftMem
+
 
 } // namespace raft
 

@@ -3,6 +3,25 @@
 #include "raft.pb.h"
 #include "log_utils.h"
 
+
+namespace {
+    
+const raft::MetaInfo* 
+    getConstMeta(const std::unique_ptr<raft::HardState>& hard_state)
+{
+    if (nullptr == hard_state) {
+        return nullptr;
+    }
+
+    if (false == hard_state->has_meta()) {
+        return nullptr;
+    }
+
+    return &(hard_state->meta());
+}
+
+}
+
 namespace raft {
 
 
@@ -15,9 +34,11 @@ RaftState::RaftState(
     , soft_state_(soft_state)
 {
     commit_index_ = raft_mem_.GetCommit();
-    if (nullptr != hard_state_ && hard_state_->has_commit()) {
-        assert(commit_index_ <= hard_state_->commit());
-        commit_index_ = hard_state->commit();
+
+    auto meta = getConstMeta(hard_state);
+    if (nullptr != meta && meta->has_commit()) {
+        assert(commit_index_ <= meta->commit());
+        commit_index_ = meta->commit();
     }
 
     assert(commit_index_ >= GetMinIndex() || uint64_t{1} == GetMinIndex());
@@ -34,28 +55,27 @@ raft::RaftRole RaftState::GetRole() const
 
 uint64_t RaftState::GetTerm() const 
 {
-    if (nullptr != hard_state_) {
-        assert(hard_state_->term() >= raft_mem_.GetTerm());
-        return hard_state_->term();
+    auto meta = getConstMeta(hard_state_);
+    if (nullptr != meta && meta->has_term()) {
+        assert(meta->term() >= raft_mem_.GetTerm());
+        return meta->term();
     }
-    assert(nullptr == hard_state_);
+
     return raft_mem_.GetTerm();
 }
 
 uint32_t RaftState::GetVote(uint64_t msg_term) const 
 {
-    if (nullptr != hard_state_) {
-        if (hard_state_->term() == msg_term && 
-                hard_state_->has_vote()) {
-            assert(0 == raft_mem_.GetVote(msg_term));
-            return hard_state_->vote();
+    auto meta = getConstMeta(hard_state_);
+    if (nullptr != meta) {
+        if (meta->has_term()) {
+            return meta->has_vote() ? meta->vote() : 0;
         }
 
-        // else => 
-        return 0;
+        assert(false == meta->has_term());
+        assert(false == meta->has_vote());
     }
 
-    assert(nullptr == hard_state_);
     return raft_mem_.GetVote(msg_term);
 }
 
@@ -116,12 +136,7 @@ uint64_t RaftState::GetMaxIndex() const
 
 uint64_t RaftState::GetCommit() const 
 {
-    if (nullptr != hard_state_ && hard_state_->has_commit()) {
-        assert(hard_state_->commit() >= raft_mem_.GetCommit());
-        return hard_state_->commit();
-    }
-    
-    return raft_mem_.GetCommit();
+    return commit_index_;
 }
 
 const raft::Entry* RaftState::At(int mem_idx) const

@@ -13,9 +13,15 @@ build_raft_mem(
     std::unique_ptr<raft::HardState> hard_state = 
         cutils::make_unique<raft::HardState>();
     assert(nullptr != hard_state);
-    hard_state->set_term(term);
-    hard_state->set_commit(commit_index);
-    hard_state->set_vote(0);
+
+    {
+        auto meta = hard_state->mutable_meta();
+        assert(nullptr != meta);
+        meta->set_term(term);
+        meta->set_vote(0);
+        meta->set_commit(commit_index);
+    }
+    
     if (0 != commit_index) {
         raft::Entry* entry = hard_state->add_entries();
         assert(nullptr != entry);
@@ -120,7 +126,13 @@ void update_term(
     std::unique_ptr<raft::HardState>
         hard_state = cutils::make_unique<raft::HardState>();
     assert(nullptr != hard_state);
-    hard_state->set_term(next_term);
+
+    {
+        auto meta = hard_state->mutable_meta();
+        assert(nullptr != meta);
+        meta->set_term(next_term);
+    }
+
     raft_mem->ApplyState(std::move(hard_state), nullptr);
 }
 

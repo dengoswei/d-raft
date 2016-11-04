@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cassert>
 #include "raft_config.h"
 #include "mem_utils.h"
