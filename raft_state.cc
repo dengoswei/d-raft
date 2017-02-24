@@ -41,6 +41,11 @@ RaftState::RaftState(
         commit_index_ = meta->commit();
     }
 
+	if (commit_index_ < GetMinIndex() && uint64_t{1} != GetMinIndex()) {
+		printf ( "logid %lu min %lu %lu commit_index_ %lu\n", 
+				raft_mem_.GetLogId(), raft_mem_.GetMinIndex(), 
+				GetMinIndex(), commit_index_ );
+	}
     assert(commit_index_ >= GetMinIndex() || uint64_t{1} == GetMinIndex());
 }
 
@@ -85,7 +90,8 @@ uint32_t RaftState::GetLeaderId(uint64_t msg_term) const
         return 0;
     }
 
-    if (nullptr != soft_state_ && soft_state_->has_leader_id()) {
+	assert(GetTerm() == msg_term);
+    if (nullptr != soft_state_ && 0 != soft_state_->leader_id()) {
         return soft_state_->leader_id();
     }
 
@@ -233,6 +239,7 @@ bool RaftState::IsLogEmpty() const
 
 bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
 {
+	assert(raft::RaftRole::FOLLOWER == GetRole());
     if (0 == log_index) {
         assert(0 == log_term);
         return true;
@@ -242,16 +249,17 @@ bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
     uint64_t min_index = GetMinIndex();
     if (0 == min_index) {
         assert(IsLogEmpty());
-        return false;
+        return false; // should rejected
     }
 
     assert(0 < min_index);
-    if (min_index > log_index) {
+	if (log_index < min_index) {
         logerr("IMPORTANT: min_index %" PRIu64 " log_index %" PRIu64, 
                 min_index, log_index);
         return true;
     }
 
+	assert(min_index <= log_index);
     if (log_index > GetMaxIndex()) {
         return false;
     }
@@ -265,6 +273,16 @@ bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
     assert(nullptr != mem_entry);
     assert(mem_entry->index() == log_index);
     assert(0 < mem_entry->term());
+	if (mem_entry->term() != log_term) {
+		if (log_index <= GetCommit()) {
+			printf ( "logid %lu log_index %lu log_term %lu mem_entry: index %lu term %lu\n", 
+					raft_mem_.GetLogId(), 
+					log_index, log_term, 
+					mem_entry->index(), mem_entry->term());
+		}
+		assert(log_index > GetCommit());
+	}
+
     return mem_entry->term() == log_term;
 }
 
@@ -274,13 +292,17 @@ const std::set<uint32_t>& RaftState::GetVoteFollowerSet() const {
     return raft_mem_.GetVoteFollowerSet();
 }
 
-raft::Replicate* RaftState::GetReplicate() 
-{
-    return raft_mem_.GetReplicate();
-}
+//raft::Replicate* RaftState::GetReplicate() 
+//{
+//    return raft_mem_.GetReplicate();
+//}
 
 uint64_t RaftState::GetLogTerm(uint64_t log_index) const 
 {
+	if (0 == log_index) {
+		return 0;
+	}
+
     uint64_t min_index = GetMinIndex();
     assert(min_index <= log_index);
     assert(log_index <= GetMaxIndex());
@@ -291,6 +313,14 @@ uint64_t RaftState::GetLogTerm(uint64_t log_index) const
     assert(nullptr != mem_entry);
     assert(mem_entry->index() == log_index);
     return mem_entry->term();
+}
+
+//uint64_t RaftState::GetMinusIndexLogTerm() const {
+//	return raft_mem_.GetMinusIndexLogTerm();
+//}
+
+uint64_t RaftState::GetLogId() const {
+	return raft_mem_.GetLogId();
 }
 
 } // namespace raft;

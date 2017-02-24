@@ -1,5 +1,6 @@
 #include "test_helper.h"
 #include "log_utils.h"
+#include "progress.h"
 
 std::unique_ptr<raft::RaftMem>
 build_raft_mem(
@@ -7,7 +8,7 @@ build_raft_mem(
         uint64_t term, uint64_t commit_index, raft::RaftRole role)
 {
     std::unique_ptr<raft::RaftMem> raft_mem = 
-        cutils::make_unique<raft::RaftMem>(1, id, 100);
+        cutils::make_unique<raft::RaftMem>(1, id, 100, 15);
     assert(nullptr != raft_mem);
 
     std::unique_ptr<raft::HardState> hard_state = 
@@ -31,12 +32,14 @@ build_raft_mem(
         entry->set_reqid(0);
     }
 
+	assert(0 == raft_mem->Init(*hard_state));
+
     std::unique_ptr<raft::SoftState> soft_state = 
         cutils::make_unique<raft::SoftState>();
     assert(nullptr != soft_state);
     soft_state->set_role(static_cast<uint32_t>(role));
 
-    raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
+    raft_mem->ApplyState(nullptr, std::move(soft_state));
     assert(raft_mem->GetRole() == role);
     assert(raft_mem->GetTerm() == term);
     assert(raft_mem->GetCommit() == commit_index);
@@ -161,7 +164,7 @@ bool operator==(const raft::Entry&a, const raft::Entry& b)
     return true;
 }
 
-std::unique_ptr<raft::Message>
+std::vector<std::unique_ptr<raft::Message>>
 trigger_timeout(
         std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
         uint32_t id)
@@ -179,27 +182,29 @@ trigger_timeout(
     std::tie(hard_state, 
             soft_state, mark_broadcast, rsp_msg_type) = raft_mem->CheckTimeout(true);
 
+	assert(mark_broadcast);
     raft::Message fake_msg;
     fake_msg.set_type(raft::MessageType::MsgNull);
     fake_msg.set_logid(raft_mem->GetLogId());
     fake_msg.set_to(raft_mem->GetSelfId());
     fake_msg.set_from(0);
     fake_msg.set_index(1);
-    auto rsp_msg = raft_mem->BuildRspMsg(
-            fake_msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
+    auto vec_rsp_msg = raft_mem->BuildBroadcastRspMsg(
+            fake_msg, hard_state, soft_state, rsp_msg_type);
     raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
-    return rsp_msg;
+	return vec_rsp_msg;
 }
 
 
-std::unique_ptr<raft::Message>
+// std::unique_ptr<raft::Message>
+std::vector<std::unique_ptr<raft::Message>>
 apply_msg(
         std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
         const raft::Message& msg)
 {
     if (mapRaft.end() == mapRaft.find(msg.to()) || 
             nullptr == mapRaft.at(msg.to())) {
-        return nullptr;
+        return {};
     }
 
     assert(mapRaft.end() != mapRaft.find(msg.to()));
@@ -215,11 +220,27 @@ apply_msg(
     std::tie(hard_state, 
             soft_state, mark_broadcast, rsp_msg_type, 
             need_disk_replicate) = raft_mem->Step(msg, nullptr, nullptr);
+
     assert(false == need_disk_replicate);
-    auto rsp_msg = raft_mem->BuildRspMsg(
-            msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
-    raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
-    return rsp_msg;
+	if (false == mark_broadcast) {
+		auto rsp_msg = raft_mem->BuildRspMsg(
+				msg, hard_state, soft_state, msg.from(), rsp_msg_type);
+		raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
+
+		std::vector<std::unique_ptr<raft::Message>> vec_msg;
+		if (nullptr != rsp_msg) {
+			vec_msg.push_back(std::move(rsp_msg));
+		}
+		return vec_msg;
+	}
+
+	assert(mark_broadcast);
+	auto vec_msg = raft_mem->BuildBroadcastRspMsg(
+			msg, hard_state, soft_state, rsp_msg_type);
+	assert(false == vec_msg.empty());
+
+	raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
+	return vec_msg;
 }
 
 void loop_until(
@@ -237,26 +258,13 @@ void loop_until(
         logdebug("MSG type %d from %u to %u index %d", 
                 static_cast<int>(msg->type()), 
                 msg->from(), msg->to(), static_cast<int>(msg->index()));
-        if (0 != msg->to()) {
-            auto rsp_msg = apply_msg(mapRaft, *msg);
-            if (nullptr != rsp_msg) {
-                vecRspMsg.push_back(std::move(rsp_msg));
-            }
-        }
-        else {
-            for (const auto& idpair : mapRaft) {
-                if (msg->from() == idpair.first) {
-                    continue;
-                }
-
-                auto real_msg = *(msg);
-                real_msg.set_to(idpair.first);
-                auto rsp_msg = apply_msg(mapRaft, real_msg);
-                if (nullptr != rsp_msg) {
-                    vecRspMsg.push_back(std::move(rsp_msg));
-                }
-            }
-        }
+		assert(0 != msg->to());
+        auto vec_msg = apply_msg(mapRaft, *msg);
+		for (auto& rsp_msg : vec_msg) {
+			assert(nullptr != rsp_msg);
+			assert(0 != rsp_msg->to());
+			vecRspMsg.push_back(std::move(rsp_msg));
+		}
     }
 
     return loop_until(mapRaft, vecRspMsg);
@@ -270,17 +278,16 @@ bool make_leader(
     assert(mapRaft.end() != mapRaft.find(next_leader_id));
     assert(nullptr != mapRaft.at(next_leader_id));
 
-    std::vector<std::unique_ptr<raft::Message>> vecMsg;
-    vecMsg.push_back(nullptr);
-    vecMsg[0] = trigger_timeout(mapRaft, next_leader_id);
-    assert(nullptr != vecMsg[0]);
+    std::vector<std::unique_ptr<raft::Message>> 
+		vecMsg = trigger_timeout(mapRaft, next_leader_id);
+	assert(size_t{2} == vecMsg.size());
 
     loop_until(mapRaft, vecMsg);
     return raft::RaftRole::LEADER == mapRaft.at(next_leader_id)->GetRole();
 }
 
 
-std::unique_ptr<raft::Message>
+std::vector<std::unique_ptr<raft::Message>>
 set_value(
         raft::RaftMem& raft_mem, 
         const std::string& value, uint64_t reqid)
@@ -301,45 +308,66 @@ set_value(
     assert(true == mark_broadcast);
     assert(raft::MessageType::MsgApp == rsp_msg_type);
 
-    auto app_msg = raft_mem.BuildRspMsg(
-            *prop_msg, hard_state, soft_state, 
-            mark_broadcast, rsp_msg_type);
-    assert(nullptr != app_msg);
-    assert(1 == app_msg->entries_size());
-    assert(raft::MessageType::MsgApp == app_msg->type());
+    auto vec_app_msg = raft_mem.BuildBroadcastRspMsg(
+            *prop_msg, hard_state, soft_state, rsp_msg_type);
+	assert(false == vec_app_msg.empty());
     raft_mem.ApplyState(std::move(hard_state), std::move(soft_state));
-
-    return app_msg;
+    return vec_app_msg;
 }
 
 
-std::unique_ptr<raft::RaftDisk>
-build_raft_disk(uint32_t id, FakeDiskStorage& storage)
-{
-    auto raft_disk = cutils::make_unique<raft::RaftDisk>(1, id, 
-            [&](uint64_t logid, uint64_t log_index, int entries_size)
-                -> std::tuple<int, std::unique_ptr<raft::HardState>> {
-                return storage.Read(logid, log_index, entries_size);
-            });
-
-    assert(nullptr != raft_disk);
-    return raft_disk;
-}
+//std::unique_ptr<raft::RaftDisk>
+//build_raft_disk(uint32_t id, FakeDiskStorage& storage)
+//{
+//    auto raft_disk = cutils::make_unique<raft::RaftDisk>(1, id, 
+//            [&](uint64_t logid, uint64_t log_index, int entries_size)
+//                -> std::tuple<int, std::unique_ptr<raft::HardState>> {
+//                return storage.Read(logid, log_index, entries_size);
+//            });
+//
+//    assert(nullptr != raft_disk);
+//    return raft_disk;
+//}
 
 
 std::unique_ptr<raft::RaftDiskCatchUp>
 build_raft_disk_c(
-        uint32_t selfid, uint32_t catch_up_id, 
-        uint64_t term, uint64_t max_index, uint64_t min_index, 
+        uint32_t selfid, uint64_t term, 
+		uint64_t max_index, uint64_t min_index, uint64_t disk_commit_index, 
         FakeDiskStorage& storage)
 {
+	assert(max_index >= disk_commit_index);
     auto raft_disk_c = 
         cutils::make_unique<raft::RaftDiskCatchUp>(
-                1, selfid, catch_up_id, term, max_index, min_index, 
+                1, selfid, term, max_index, min_index, disk_commit_index, 
                 [&](uint64_t logid, uint64_t log_index, int entries_size)
                     -> std::tuple<int, std::unique_ptr<raft::HardState>> {
                     return storage.Read(logid, log_index, entries_size);
                 });
     assert(nullptr != raft_disk_c);
     return raft_disk_c;
+}
+
+
+void set_progress_replicate(raft::RaftMem& raft_mem)
+{
+	auto& map_progress = raft_mem.GetProgress();
+	assert(false == map_progress.empty());
+	
+	uint64_t max_index = raft_mem.GetMaxIndex();
+	for (auto& id_progress : map_progress) {
+		uint32_t peer_id = id_progress.first;
+		auto progress = id_progress.second.get();
+		assert(nullptr != progress);
+
+		progress->BecomeReplicate();
+		assert(raft::ProgressState::REPLICATE == progress->GetState());
+		// update next
+		progress->SetNext(max_index + 1);
+		// update matched
+		progress->MaybeUpdate(max_index);
+
+		assert(max_index + 1 == progress->GetNext());
+		assert(max_index == progress->GetMatched());
+	}
 }

@@ -24,7 +24,7 @@ std::unique_ptr<raft::Message> build_vote_rsp(
 
 TEST(ElectionTest, FollowerStepTimeout)
 {
-    raft::RaftMem raft(1, 1, 100);
+    raft::RaftMem raft(1, 1, 100, 15);
     assert(raft::RaftRole::FOLLOWER == raft.GetRole());
     assert(false == raft.HasTimeout());
     assert(0 == raft.GetTerm());
@@ -78,20 +78,24 @@ TEST(ElectionTest, FollowerStepTimeout)
         fake_msg.set_logid(raft.GetLogId());
         fake_msg.set_to(raft.GetSelfId());
         fake_msg.set_from(0);
-        auto rsp_msg = raft.BuildRspMsg(
-                fake_msg, hard_state, soft_state, mark_broadcast, rsp_msg_type);
-        assert(nullptr != rsp_msg);
 
-        assert(rsp_msg->type() == rsp_msg_type);
-        assert(rsp_msg->logid() == raft.GetLogId());
-        assert(0 == rsp_msg->to());
-        assert(raft.GetSelfId() == rsp_msg->from());
-        assert(hard_state->meta().term() == rsp_msg->term());
-        assert(rsp_msg->has_index());
-        assert(1 == rsp_msg->index());
-        assert(rsp_msg->has_log_term());
-        assert(0 == rsp_msg->log_term());
-        assert(0 == rsp_msg->entries_size());
+        auto vec_rsp_msg = raft.BuildBroadcastRspMsg(
+                fake_msg, hard_state, soft_state, rsp_msg_type);
+		assert(size_t{2} == vec_rsp_msg.size());
+		for (const auto& rsp_msg : vec_rsp_msg) {
+			assert(nullptr != rsp_msg);
+
+			assert(rsp_msg->type() == rsp_msg_type);
+			assert(rsp_msg->logid() == raft.GetLogId());
+			assert(0 != rsp_msg->to());
+			assert(raft.GetSelfId() == rsp_msg->from());
+			assert(hard_state->meta().term() == rsp_msg->term());
+			assert(rsp_msg->has_index());
+			assert(0 == rsp_msg->index());
+			assert(rsp_msg->has_log_term());
+			assert(0 == rsp_msg->log_term());
+			assert(0 == rsp_msg->entries_size());
+		}
 
         raft.ApplyState(std::move(hard_state), std::move(soft_state));
         assert(nullptr == hard_state);
@@ -103,7 +107,7 @@ TEST(ElectionTest, FollowerStepTimeout)
 
 TEST(ElectionTest, ZeroSuccElection)
 {
-    raft::RaftMem raft(1, 1, 100);
+    raft::RaftMem raft(1, 1, 100, 15);
 
     std::unique_ptr<raft::HardState> hard_state;
     std::unique_ptr<raft::SoftState> soft_state;
@@ -114,7 +118,8 @@ TEST(ElectionTest, ZeroSuccElection)
     // step 1
     {
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = raft.CheckTimeout(true);
+                soft_state, 
+				mark_broadcast, rsp_msg_type) = raft.CheckTimeout(true);
         raft.ApplyState(std::move(hard_state), std::move(soft_state));
     }
 
@@ -136,7 +141,7 @@ TEST(ElectionTest, ZeroSuccElection)
         assert(nullptr != hard_state);
         assert(nullptr != soft_state);
         assert(true == mark_broadcast);
-        assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+        assert(raft::MessageType::MsgApp == rsp_msg_type);
         assert(false == need_disk_replicate);
 
         assert(hard_state->has_meta());
@@ -149,25 +154,28 @@ TEST(ElectionTest, ZeroSuccElection)
                 static_cast<raft::RaftRole>(soft_state->role()));
         assert(raft.GetSelfId() == soft_state->leader_id());
 
-        auto rsp_msg = raft.BuildRspMsg(
-                vote_rsp, hard_state, soft_state, mark_broadcast, rsp_msg_type);
-        assert(nullptr != rsp_msg);
+        auto vec_rsp_msg = raft.BuildBroadcastRspMsg(
+                vote_rsp, hard_state, soft_state, rsp_msg_type);
+		assert(size_t{2} == vec_rsp_msg.size());
+		for (const auto& rsp_msg : vec_rsp_msg) {
+			assert(nullptr != rsp_msg);
 
-        assert(rsp_msg->type() == rsp_msg_type);
-        assert(rsp_msg->logid() == raft.GetLogId());
-        assert(0 == rsp_msg->to());
-        assert(raft.GetSelfId() == rsp_msg->from());
-        assert(raft.GetTerm() == rsp_msg->term());
-        assert(rsp_msg->has_index());
-        assert(1 == rsp_msg->index());
-        assert(rsp_msg->has_log_term());
-        assert(0 == rsp_msg->log_term());
-        assert(0 == rsp_msg->entries_size());
+			assert(rsp_msg->type() == rsp_msg_type);
+			assert(rsp_msg->logid() == raft.GetLogId());
+			assert(0 != rsp_msg->to());
+			assert(raft.GetSelfId() == rsp_msg->from());
+			assert(raft.GetTerm() == rsp_msg->term());
+			assert(rsp_msg->has_index());
+			assert(0 == rsp_msg->index());
+			assert(rsp_msg->has_log_term());
+			assert(0 == rsp_msg->log_term());
+			assert(0 == rsp_msg->entries_size());
 
-        assert(rsp_msg->has_commit_index());
-        assert(rsp_msg->has_commit_term());
-        assert(0 == rsp_msg->commit_index());
-        assert(0 == rsp_msg->commit_term());
+			assert(rsp_msg->has_commit_index());
+			assert(rsp_msg->has_commit_term());
+			assert(0 == rsp_msg->commit_index());
+			assert(0 == rsp_msg->commit_term());
+		}
 
         raft.ApplyState(std::move(hard_state), std::move(soft_state));
         assert(nullptr == hard_state);
@@ -181,7 +189,7 @@ TEST(ElectionTest, ZeroSuccElection)
 
 TEST(ElectionTest, OneRejectElection)
 {
-    raft::RaftMem raft_mem(1, 1, 100);
+    raft::RaftMem raft_mem(1, 1, 100, 15);
 
     std::unique_ptr<raft::HardState> hard_state;
     std::unique_ptr<raft::SoftState> soft_state;
@@ -225,7 +233,7 @@ TEST(ElectionTest, OneRejectElection)
         assert(nullptr != hard_state);
         assert(nullptr != soft_state);
         assert(true == mark_broadcast);
-        assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+        assert(raft::MessageType::MsgApp == rsp_msg_type);
         assert(false == need_disk_replicate);
 
         raft_mem.ApplyState(std::move(hard_state), std::move(soft_state));
@@ -236,7 +244,7 @@ TEST(ElectionTest, OneRejectElection)
 
 TEST(ElectionTest, AllRejectElection)
 {
-    raft::RaftMem raft_mem(1, 1, 100);
+    raft::RaftMem raft_mem(1, 1, 100, 15);
 
     std::unique_ptr<raft::HardState> hard_state;
     std::unique_ptr<raft::SoftState> soft_state;
@@ -283,7 +291,7 @@ TEST(ElectionTest, AllRejectElection)
 
 TEST(ElectionTest, StepTimeoutNothing)
 {
-    raft::RaftMem raft_mem(1, 1, 100);
+    raft::RaftMem raft_mem(1, 1, 100, 15);
 
     std::unique_ptr<raft::HardState> hard_state;
     std::unique_ptr<raft::SoftState> soft_state;
@@ -328,7 +336,7 @@ TEST(ElectionTest, StepTimeoutNothing)
 
 TEST(ElectionTest, StepTimeoutAfterAllReject)
 {
-    raft::RaftMem raft_mem(1, 1, 100);
+    raft::RaftMem raft_mem(1, 1, 100, 15);
 
     std::unique_ptr<raft::HardState> hard_state;
     std::unique_ptr<raft::SoftState> soft_state;

@@ -6,7 +6,8 @@
 namespace raft {
 
 
-Replicate::Replicate()
+Replicate::Replicate(uint64_t logid)
+	: logid_(logid)
 {
 
 }
@@ -34,15 +35,21 @@ bool Replicate::updateAcceptedMap(
     assert(0 < next_log_index);
     uint64_t new_accepted = next_log_index - 1;
     assert(0 <= new_accepted);
-    uint64_t prev_accepted = GetAcceptedIndex(follower_id);
-    if (new_accepted <= prev_accepted) {
-        return false; // update nothing 
-    }
+	accepted_map_[follower_id] = new_accepted;
 
-    assert(new_accepted > prev_accepted);
-    accepted_map_[follower_id] = new_accepted;
-    logerr("INFO: update accepted_map_ follower_id %u new_accepted %" PRIu64, 
-            follower_id, new_accepted);
+//    uint64_t prev_accepted = GetAcceptedIndex(follower_id);
+//    if (new_accepted <= prev_accepted) {
+//        return false; // update nothing 
+//    }
+//
+//    assert(new_accepted > prev_accepted);
+//    accepted_map_[follower_id] = new_accepted;
+
+	auto erase_rejected = mayErasePrevRejected(follower_id, new_accepted);
+//    logerr("INFO: update accepted_map_ logid %lu follower_id %u new_accepted %" PRIu64
+//			" erase_rejected %" PRIu64, 
+//			logid_, 
+//            follower_id, new_accepted, erase_rejected);
     return true;
 }
 
@@ -53,23 +60,58 @@ bool Replicate::updateRejectedMap(
     assert(0 < next_log_index);
     uint64_t new_rejected = next_log_index - 1;
     assert(0 < new_rejected);
-    uint64_t prev_rejected = GetRejectedIndex(follower_id);
+//    uint64_t prev_rejected = GetRejectedIndex(follower_id);
 
-    if (0 != prev_rejected && new_rejected >= prev_rejected) {
-        // update nothing
-        return false; 
-    }
-
-    assert(0 == prev_rejected || new_rejected < prev_rejected);
-    if (new_rejected == prev_rejected) {
-        return false; // update nothing
-    }
-
-    assert(0 == prev_rejected | new_rejected < prev_rejected);
-    rejected_map_[follower_id] = new_rejected;
-    logerr("INFO: update rejected_map_ follower_id %u new_rejected %" PRIu64, 
-            follower_id, new_rejected);
+	rejected_map_[follower_id] = new_rejected;
+//
+//    if (0 != prev_rejected && new_rejected >= prev_rejected) {
+//        // update nothing
+//        return false; 
+//    }
+//
+//    assert(0 == prev_rejected || new_rejected < prev_rejected);
+//    if (new_rejected == prev_rejected) {
+//        return false; // update nothing
+//    }
+//
+//    assert(0 == prev_rejected || new_rejected < prev_rejected);
+//    rejected_map_[follower_id] = new_rejected;
+	auto erase_accepted = mayErasePrevAccepted(follower_id, new_rejected);
+//    logerr("INFO: update rejected_map_ logid %lu follower_id %u new_rejected %" PRIu64
+//			" erase_accepted %" PRIu64, 
+//			logid_, 
+//            follower_id, new_rejected, erase_accepted);
     return true;
+}
+
+uint64_t Replicate::mayErasePrevRejected(
+		uint32_t follower_id, uint64_t new_accepted)
+{
+	auto iter = rejected_map_.find(follower_id);
+	if (rejected_map_.end() == iter || new_accepted < iter->second) {
+		return 0; // nothing;
+	}
+
+	assert(rejected_map_.end() != iter);
+	assert(new_accepted >= iter->second);
+	uint64_t prev_rejected = iter->second;
+	rejected_map_.erase(follower_id);
+	return prev_rejected;
+}
+
+uint64_t Replicate::mayErasePrevAccepted(
+		uint32_t follower_id, uint64_t new_rejected)
+{
+	auto iter = accepted_map_.find(follower_id);
+	if (accepted_map_.end() == iter || new_rejected > iter->second) {
+		return 0; // nothing;
+	}
+
+	assert(accepted_map_.end() != iter);
+	assert(new_rejected <= iter->second);
+	uint64_t prev_accepted = iter->second;
+	accepted_map_.erase(follower_id);
+	return prev_accepted;
 }
 
 std::map<uint64_t, int>
@@ -128,6 +170,12 @@ void Replicate::Fix(uint64_t fix_index)
     }
 }
 
+void Replicate::Clear()
+{
+	accepted_map_.clear();
+	rejected_map_.clear(); // reset
+}
+
 
 // only use for hb explore
 uint64_t Replicate::NextExploreIndex(
@@ -145,6 +193,16 @@ uint64_t Replicate::NextExploreIndex(
         // no need explore
         return 0;
     }
+
+//	if (accepted_map_.end() != accepted_map_.find(follower_id)) {
+//		logerr("TEST: logid %lu follower_id %d accepted %lu min_index %lu max_index %lu", 
+//				logid_, follower_id, accepted_map_.at(follower_id), min_index, max_index);
+//	}
+//
+//	if (rejected_map_.end() != rejected_map_.find(follower_id)) {
+//		logerr("TEST: logid %lu follower_id %d rejected %lu min_index %lu max_index %lu", 
+//				logid_, follower_id, rejected_map_.at(follower_id), min_index, max_index);
+//	}
 
     if (accepted_map_.end() == accepted_map_.find(follower_id)) {
         if (rejected_map_.end() == rejected_map_.find(follower_id)) {
@@ -206,6 +264,16 @@ uint64_t Replicate::NextCatchUpIndex(
         return 0; // need explore first;
     }
 
+//	if (accepted_map_.end() != accepted_map_.find(follower_id)) {
+//		logerr("TEST: logid %lu follower_id %d accepted %lu min_index %lu max_index %lu", 
+//				logid_, follower_id, accepted_map_.at(follower_id), min_index, max_index);
+//	}
+//
+//	if (rejected_map_.end() != rejected_map_.find(follower_id)) {
+//		logerr("TEST: logid %lu follower_id %d rejected %lu min_index %lu max_index %lu", 
+//				logid_, follower_id, rejected_map_.at(follower_id), min_index, max_index);
+//	}
+
     // else =>
     assert(0 == next_explore_index);
     if (accepted_map_.end() == accepted_map_.find(follower_id)) {
@@ -235,8 +303,8 @@ uint64_t Replicate::NextCatchUpIndex(
 
     assert(accepted_map_.at(follower_id) >= min_index);
     if (accepted_map_.at(follower_id) == max_index) {
-        logerr("CATCH-UP STOP follower_id %u at max_index %" PRIu64, 
-                follower_id, max_index);
+//        logerr("CATCH-UP STOP follower_id %u at max_index %" PRIu64, 
+//                follower_id, max_index);
         return 0; // no need catch-up
     }
 

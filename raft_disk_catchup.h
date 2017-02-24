@@ -5,7 +5,6 @@
 #include <functional>
 #include <stdint.h>
 #include "raft.pb.h"
-#include "replicate.h"
 
 
 namespace raft {
@@ -23,20 +22,27 @@ public:
     RaftDiskCatchUp(
             uint64_t logid, 
             uint32_t selfid, 
-            uint32_t catch_up_id, 
+            // uint32_t catch_up_id, 
             uint64_t term, 
             uint64_t max_catch_up_index, 
             uint64_t min_index, 
+			uint64_t disk_commit_index, 
             ReadHandler readcb);
 
     ~RaftDiskCatchUp();
 
-    std::tuple<int, std::unique_ptr<raft::Message>>
+	// err, rsp_msg, need_mem
+    std::tuple<int, std::unique_ptr<raft::Message>, bool>
         Step(const raft::Message& msg);
+
+	void Update(uint64_t term, 
+			uint64_t max_catch_up_index, 
+			uint64_t min_disk_index, 
+			uint64_t disk_commit_index);
 
 private:
 
-    raft::MessageType step(const raft::Message& msg);
+	std::tuple<raft::MessageType, bool> step(const raft::Message& msg);
 
     std::tuple<int, std::unique_ptr<raft::Message>>
         buildRspMsg(
@@ -46,14 +52,13 @@ private:
 private:
     const uint64_t logid_;
     const uint32_t selfid_;
-    const uint32_t catch_up_id_;
     
-    const uint64_t term_;
-    const uint64_t max_index_;
-    const uint64_t min_index_;
+    uint64_t term_;
+    uint64_t max_index_;
+    uint64_t min_index_;
+	uint64_t disk_commit_index_;
 
     ReadHandler readcb_;
-    raft::Replicate replicate_;
 }; // class RaftDiskCatchUp
 
 

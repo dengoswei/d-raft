@@ -96,11 +96,11 @@ TEST(CandidateTest, InvalidTerm)
         assert(false == need_disk_replicate);
 
         auto rsp_msg = raft_mem->BuildRspMsg(
-                *null_msg, nullptr, nullptr, mark_broadcast, rsp_msg_type);
+                *null_msg, nullptr, nullptr, null_msg->from(), rsp_msg_type);
         assert(nullptr != rsp_msg);
         assert(rsp_msg_type == rsp_msg->type());
         assert(raft_mem->GetTerm() == rsp_msg->term());
-        assert(raft_mem->GetMaxIndex() + 1 == rsp_msg->index());
+        assert(raft_mem->GetMaxIndex() == rsp_msg->index());
         assert(rsp_msg->has_log_term());
     }
 }
@@ -133,13 +133,16 @@ TEST(CandidateTest, RepeateBroadcastVote)
         fake_msg.set_logid(raft_mem->GetLogId());
         fake_msg.set_to(raft_mem->GetSelfId());
         fake_msg.set_term(raft_mem->GetTerm());
-        auto rsp_msg = raft_mem->BuildRspMsg(
-                fake_msg, nullptr, nullptr, mark_broadcast, rsp_msg_type);
-        assert(nullptr != rsp_msg);
-        assert(rsp_msg_type == rsp_msg->type());
-        assert(raft_mem->GetTerm() == rsp_msg->term());
-        assert(raft_mem->GetMaxIndex() + 1 == rsp_msg->index());
-        assert(rsp_msg->has_log_term());
+        auto vec_rsp_msg = raft_mem->BuildBroadcastRspMsg(
+                fake_msg, nullptr, nullptr, rsp_msg_type);
+		assert(size_t{2} == vec_rsp_msg.size());
+		for (auto& rsp_msg : vec_rsp_msg) {
+			assert(nullptr != rsp_msg);
+			assert(rsp_msg_type == rsp_msg->type());
+			assert(raft_mem->GetTerm() == rsp_msg->term());
+			assert(raft_mem->GetMaxIndex() == rsp_msg->index());
+			assert(rsp_msg->has_log_term());
+		}
 
         raft_mem->ApplyState(nullptr, nullptr);
         assert(0 == raft_mem->GetVoteCount());
@@ -169,7 +172,7 @@ TEST(CandidateTest, BecomeLeader)
     assert(nullptr != hard_state);
     assert(nullptr != soft_state);
     assert(true == mark_broadcast);
-    assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
+    assert(raft::MessageType::MsgApp == rsp_msg_type);
     assert(false == need_disk_replicate);
 
     assert(hard_state->has_meta());
@@ -183,18 +186,19 @@ TEST(CandidateTest, BecomeLeader)
     assert(soft_state->has_leader_id());
     assert(raft_mem->GetSelfId() == soft_state->leader_id());
 
-    auto rsp_msg = raft_mem->BuildRspMsg(
-            *vote_rsp_msg, hard_state, soft_state, 
-            mark_broadcast, rsp_msg_type);
-    assert(nullptr != rsp_msg);
-    assert(rsp_msg_type == rsp_msg->type());
-    assert(0 == rsp_msg->to());
-    assert(raft_mem->GetMaxIndex() + 1 == rsp_msg->index());
-    assert(rsp_msg->has_log_term());
-    assert(rsp_msg->has_commit_index());
-    assert(rsp_msg->has_commit_term());
-    assert(raft_mem->GetCommit() == rsp_msg->commit_index());
-
+    auto vec_rsp_msg = raft_mem->BuildBroadcastRspMsg(
+            *vote_rsp_msg, hard_state, soft_state, rsp_msg_type);
+	assert(size_t{2} == vec_rsp_msg.size());
+	for (const auto& rsp_msg : vec_rsp_msg) {
+		assert(nullptr != rsp_msg);
+		assert(rsp_msg_type == rsp_msg->type());
+		assert(0 != rsp_msg->to());
+		assert(raft_mem->GetMaxIndex() == rsp_msg->index());
+		assert(rsp_msg->has_log_term());
+		assert(rsp_msg->has_commit_index());
+		assert(rsp_msg->has_commit_term());
+		assert(raft_mem->GetCommit() == rsp_msg->commit_index());
+	}
 
     raft_mem->ApplyState(std::move(hard_state), std::move(soft_state));
     assert(raft::RaftRole::LEADER == raft_mem->GetRole());

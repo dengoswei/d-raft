@@ -26,6 +26,7 @@ enum ErrorCode {
 enum EntryType {
 	EntryNormal     = 0;
 	EntryConfChange = 1;
+	EntryNoop       = 3;
 }
 
 message Entry {
@@ -84,7 +85,11 @@ message Message {
 	optional bool        reject      = 12;
 	optional uint64      reject_hint = 13;
 
-    optional bool        disk_mark = 14;
+    optional bool        disk_mark         = 14;
+	optional uint32      prev_entries_size = 15;
+	optional bool        one_shot_mark     = 16;
+
+	repeated uint32      peer_set   = 17;
 }
 
 message SoftState {
@@ -94,7 +99,7 @@ message SoftState {
 
 message MetaInfo {
     optional uint64 term = 1;
-    optional uint64 vote = 2;
+    optional uint32 vote = 2;
     optional uint64 commit = 3;
     // on disk: [min_index, max_index];
     optional uint64 min_index = 4;

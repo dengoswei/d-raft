@@ -11,7 +11,7 @@ class Replicate {
 
 public:
 
-    Replicate();
+    Replicate(uint64_t logid);
 
     ~Replicate();
 
@@ -38,13 +38,20 @@ public:
             uint32_t follower_id, 
             uint64_t min_index, uint64_t max_index) const; 
 
+	void Clear();
+
 private:
     bool updateAcceptedMap(uint32_t follower_id, uint64_t next_log_index);
 
     bool updateRejectedMap(uint32_t follower_id, uint64_t next_log_index);
 
+	uint64_t mayErasePrevRejected(uint32_t follower_id, uint64_t new_accepted);
+
+	uint64_t mayErasePrevAccepted(uint32_t follower_id, uint64_t new_rejected);
+
 private:
 
+	const uint64_t logid_;
     std::map<uint32_t, uint64_t> accepted_map_;
     std::map<uint32_t, uint64_t> rejected_map_;
 }; // class Replicate

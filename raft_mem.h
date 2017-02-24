@@ -8,6 +8,12 @@
 #include <tuple>
 #include <stdint.h>
 #include "raft.pb.h"
+#include "random_utils.h"
+
+
+namespace leveldb {
+	class Slice;
+} // namespace leveldb;
 
 namespace raft {
 
@@ -18,8 +24,9 @@ enum class RaftRole : uint32_t {
     FOLLOWER = 3, 
 };
 
-class Replicate;
+class Progress;
 class RaftConfig;
+class TmpEntryCache;
 
 class RaftMem {
 
@@ -27,16 +34,13 @@ private:
     using StepMessageHandler = 
         std::function<
             std::tuple<
-                std::unique_ptr<raft::HardState>, 
-                std::unique_ptr<raft::SoftState>, 
-                // mark_broadcast, rsp_msg_type, need_disk_replicate
                 bool, 
                 raft::MessageType, 
                 bool>(
                         raft::RaftMem&, 
                         const raft::Message&, 
-                        std::unique_ptr<raft::HardState>, 
-                        std::unique_ptr<raft::SoftState>)>;
+                        std::unique_ptr<raft::HardState>&, 
+                        std::unique_ptr<raft::SoftState>&)>;
 
     using TimeoutHandler = 
         std::function<
@@ -54,37 +58,52 @@ private:
                 const raft::Message&, 
                 const std::unique_ptr<raft::HardState>&, 
                 const std::unique_ptr<raft::SoftState>&,
-                bool, 
-                const raft::MessageType)>;
+                uint32_t, 
+                const raft::MessageType, 
+				bool)>;
 
 public:
     RaftMem(
         uint64_t logid, 
         uint32_t selfid, 
-        uint32_t election_timeout_ms);
+        uint32_t election_tick_ms, 
+		uint32_t hb_tick_ms);
 
     ~RaftMem();
 
-    int Init(const raft::HardState& hard_state);
-
+    int Init(
+			const raft::HardState& hard_state);
 
     std::tuple<
         std::unique_ptr<raft::Message>, 
         std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>, 
-        bool, raft::MessageType>
+        std::unique_ptr<raft::SoftState>>
             SetValue(
                     const std::vector<std::string>& vec_value, 
                     const std::vector<uint64_t>& vec_reqid);
+
+	std::tuple<
+		std::unique_ptr<raft::Message>, 
+		std::unique_ptr<raft::HardState>, 
+		std::unique_ptr<raft::SoftState>>
+			SetValue(
+					const std::vector<leveldb::Slice>& vec_value, 
+					const std::vector<uint64_t>& vec_reqid);
 
     // prop_req msg, hs, sf, mk, rsp_msg_type
     std::tuple<
         std::unique_ptr<raft::Message>, 
         std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>, 
-        bool, raft::MessageType>
+        std::unique_ptr<raft::SoftState>>
             SetValue(const std::string& value, uint64_t reqid);
 
+
+	// TODO
+	std::tuple<
+		std::unique_ptr<raft::Message>, 
+		std::unique_ptr<raft::HardState>, 
+		std::unique_ptr<raft::SoftState>>
+			SetValue(const leveldb::Slice& value, uint64_t reqid);
 
 
     // : 
@@ -92,21 +111,17 @@ public:
     // their current configurations.
     // bool for broad-cast
     std::tuple<
-        std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>, 
         bool, raft::MessageType, bool>
             Step(
                 const raft::Message& msg, 
-                std::unique_ptr<raft::HardState> hard_state, 
-                std::unique_ptr<raft::SoftState> soft_state);
+                std::unique_ptr<raft::HardState>& hard_state, 
+                std::unique_ptr<raft::SoftState>& soft_state);
 
     std::tuple<
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>, 
         bool, raft::MessageType>
             CheckTimeout(bool force_timeout);
-
-    std::unique_ptr<raft::Message> BroadcastHeartBeatMsg();
 
     // 0 ==
     void ApplyState(
@@ -117,11 +132,23 @@ public:
             const raft::Message& req_msg, 
             const std::unique_ptr<raft::HardState>& hard_state, 
             const std::unique_ptr<raft::SoftState>& soft_state, 
-            bool mark_broadcast, 
-            raft::MessageType rsp_msg_type);
+			uint32_t rsp_peer_id, 
+            raft::MessageType rsp_msg_type, 
+			bool no_null);
+
+	std::vector<std::unique_ptr<raft::Message>>
+		BuildBroadcastRspMsg(
+				const raft::Message& req_msg, 
+				const std::unique_ptr<raft::HardState>& hard_state, 
+				const std::unique_ptr<raft::SoftState>& soft_state, 
+				raft::MessageType rsp_msg_type);
 
 
     size_t CompactLog(uint64_t new_min_index);
+
+	raft::RaftRole BecomeFollower();
+
+	int ShrinkMemLog(size_t max_mem_log_size);
 
 public:
     
@@ -162,13 +189,21 @@ public:
 
     bool IsLogEmpty() const;
 
-    bool HasTimeout() const ;
+	void Tick();
+
+	void RefreshElectionTimeout();
+
+    bool HasTimeout() const;
+
+	bool IsHeartbeatTimeout() const;
+
+	bool IsHBSilenceTimeout() const;
 
     void UpdateActiveTime();
 
-    raft::Replicate* GetReplicate() {
-        return replicate_.get();
-    }
+	void UpdateHeartBeatActiveTime();
+
+	void UpdateHBSilenceTimeout();
 
     void ClearVoteMap();
 
@@ -180,14 +215,31 @@ public:
 
     const std::set<uint32_t>& GetVoteFollowerSet() const;
 
-    // disk replicate
-    raft::Replicate* GetDiskReplicate() {
-        return disk_replicate_.get();
-    }
-    
-    uint64_t GetDiskMinIndex() const {
-        return disk_min_index_;
-    }
+    uint64_t GetDiskMinIndex() const;
+
+	void RecvCatchUp();
+
+	void MissingCatchUp();
+
+	bool NeedCatchUp();
+
+	void TriggerCatchUp();
+
+	std::map<uint32_t, std::unique_ptr<raft::Progress>>& GetProgress() {
+		return map_progress_;
+	}
+
+	const std::map<uint32_t, std::unique_ptr<raft::Progress>>& GetProgress() const {
+		return map_progress_;
+	}
+
+	raft::Progress* GetProgress(uint32_t peer_id);
+
+	raft::TmpEntryCache* GetTmpEntryCache() {
+		return tmp_entry_cache_.get();
+	}
+
+	bool IsReplicateStall() const;
 
 private:
     void setRole(uint64_t next_term, uint32_t role);
@@ -211,6 +263,7 @@ private:
 
     void applyHardState(std::unique_ptr<raft::HardState> hard_state);
 
+	void updateHBSilenceTime();
 
 private:
     const uint64_t logid_ = 0ull;
@@ -231,19 +284,59 @@ private:
 
     std::deque<std::unique_ptr<Entry>> logs_;
 
-    std::chrono::milliseconds election_timeout_;
-    std::chrono::time_point<std::chrono::system_clock> active_time_;
+	const uint32_t base_election_tick_;
+	cutils::RandomTimeout timeout_gen_;
+
+	uint32_t election_tick_ = 0;
+	uint32_t election_deactive_tick_ = 0;
+
+	uint32_t hb_tick_ = 0;
+	uint32_t hb_deactive_tick_ = 0;
     // replicate state.. TODO
     
     std::map<uint32_t, uint64_t> vote_map_;
-    std::unique_ptr<raft::Replicate> replicate_;
+	std::map<uint32_t, std::unique_ptr<raft::Progress>> map_progress_;
 
     uint64_t disk_min_index_ = 0;
-    std::unique_ptr<raft::Replicate> disk_replicate_;
 
     std::unique_ptr<raft::RaftConfig> config_;
     std::set<uint32_t> vote_follower_set_;
+
+//	// follower
+	uint32_t missing_catch_up_ = 0;
+	std::unique_ptr<TmpEntryCache> tmp_entry_cache_;
 }; // class RaftMem
+
+
+
+int safe_shrink_mem_log(RaftMem& raft_mem, size_t max_mem_log_size);
+
+
+class TmpEntryCache {
+
+public:
+	TmpEntryCache();
+
+	~TmpEntryCache();
+
+	void MayInvalid(uint64_t active_term);
+		
+	void Insert(const raft::Entry& entry);
+
+	void Extract(
+			uint64_t active_term, raft::HardState& hard_state);
+
+	size_t Size() const {
+		return cache_.size();
+	}
+
+	uint64_t GetMaxIndex() const; 
+	uint64_t GetMinIndex() const;
+
+private:
+	uint64_t term_;
+	std::map<uint64_t, std::unique_ptr<raft::Entry>> cache_;
+};
 
 
 } // namespace raft

@@ -2,6 +2,17 @@
 #include "log_utils.h"
 #include "mem_utils.h"
 
+namespace {
+
+enum {
+
+	DISK_SWITCH_TO_EXPLORE = 65, 
+	DISK_SWITCH_TO_APP = 66, 
+	DISK_KEEP_EXPLORE = 67, 
+	DISK_SWITCH_TO_MEM = 70, 
+};
+
+}
 
 namespace raft {
 
@@ -9,39 +20,40 @@ namespace raft {
 RaftDiskCatchUp::RaftDiskCatchUp(
         uint64_t logid, 
         uint32_t selfid, 
-        uint32_t catch_up_id, 
         uint64_t term, 
         uint64_t max_catch_up_index, 
         uint64_t min_index, 
+		uint64_t disk_commit_index, 
         ReadHandler readcb)
     : logid_(logid)
     , selfid_(selfid)
-    , catch_up_id_(catch_up_id)
     , term_(term)
     , max_index_(max_catch_up_index)
     , min_index_(min_index)
+	, disk_commit_index_(disk_commit_index)
     , readcb_(readcb)
 {
     assert(0 < logid_);
     assert(0 < selfid_);
-    assert(0 < catch_up_id_);
-    assert(selfid_ != catch_up_id_);
     assert(0 < term_);
     assert(0 < max_index_);
     assert(nullptr != readcb_);
+	if (0 == min_index_) {
+		assert(0 == max_index_);
+	}
 }
 
 RaftDiskCatchUp::~RaftDiskCatchUp() = default;
 
 
-std::tuple<int, std::unique_ptr<raft::Message>>
+std::tuple<int, std::unique_ptr<raft::Message>, bool>
 RaftDiskCatchUp::Step(const raft::Message& msg)
 {
     if (false == msg.has_disk_mark() || 
             false == msg.disk_mark()) {
         logerr("logid %" PRIu64 " from %u to %u missing disk_mark", 
                 msg.logid(), msg.from(), msg.to());
-        return std::make_tuple(-1, nullptr);
+        return std::make_tuple(-1, nullptr, false);
     }
 
     assert(msg.has_disk_mark());
@@ -49,122 +61,59 @@ RaftDiskCatchUp::Step(const raft::Message& msg)
     if (msg.term() != term_) {
         logerr("logid %" PRIu64 " msg.term %" PRIu64 " term_ %" PRIu64, 
                 msg.logid(), msg.term(), term_);
-        return std::make_tuple(0, nullptr);
+        return std::make_tuple(0, nullptr, false);
     }
 
     assert(msg.term() == term_);
     assert(msg.logid() == logid_);
     assert(msg.to() == selfid_);
-    assert(msg.from() == catch_up_id_);
+	bool need_mem = false;
+	auto rsp_msg_type = raft::MessageType::MsgNull;
+	std::tie(rsp_msg_type, need_mem) = step(msg);
 
-    auto rsp_msg_type = step(msg);
+	int ret = 0;
+	std::unique_ptr<raft::Message> rsp_msg;
+	std::tie(ret, rsp_msg) = buildRspMsg(msg, rsp_msg_type);
+	if (need_mem) {
+		assert(nullptr == rsp_msg);
+	}
 
-    return buildRspMsg(msg, rsp_msg_type);
+	return std::make_tuple(ret, std::move(rsp_msg), need_mem);
 }
 
-raft::MessageType
+std::tuple<raft::MessageType, bool>
 RaftDiskCatchUp::step(const raft::Message& msg)
 {
+	assert(false == msg.one_shot_mark());
+	assert(true == msg.disk_mark());
+	bool need_mem = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
     switch (msg.type())  {
     case raft::MessageType::MsgAppResp:
         {
-            replicate_.UpdateReplicateState(
-                    msg.from(), !msg.reject(), msg.index());
-            auto next_catchup_index = 
-                replicate_.NextCatchUpIndex(
-                        msg.from(), min_index_, max_index_);
-            if (0 != next_catchup_index) {
-                rsp_msg_type = raft::MessageType::MsgApp;
-                break;
-            }
+			uint64_t next_index = 0;
+			if (msg.reject()) {
+				next_index = std::min(msg.index(), msg.reject_hint() + 1);
+				next_index = std::max(uint64_t{1}, next_index);
+			}
+			else {
+				next_index = msg.index() + 1;
+			}
 
-            assert(0 == next_catchup_index);
-            assert(raft::MessageType::MsgNull == rsp_msg_type);
-            auto next_explore_index = 
-                replicate_.NextExploreIndex(
-                        msg.from(), min_index_, max_index_);
-            if (0 != next_explore_index) {
-                rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                break;
-            }
+			assert(0 < next_index);
+			if (next_index -1 > max_index_) {
+				need_mem = true;
+				break;
+			}
 
-            assert(0 == next_explore_index);
-            assert(raft::MessageType::MsgNull == rsp_msg_type);
-            logerr("EOF: logid %" PRIu64 " msg.index %" PRIu64 " reject %d "
-                    " min_index %" PRIu64 " max_index %" PRIu64 " from %u", 
-                    msg.logid(), msg.index(), msg.reject(), 
-                    min_index_, max_index_, msg.from());
-//
-//            bool update = replicate_.UpdateReplicateState(
-//                    msg.from(), !msg.reject(), msg.index());
-//            if (update) {
-//                next_catchup_index = 
-//                    replicate_.NextCatchUpIndex(
-//                            msg.from(), min_index_, max_index_);
-//                if (0 == next_catchup_index) {
-//                    logerr("INFO: follower_id %u DiskCatchUp "
-//                            "stop at %" PRIu64, 
-//                            msg.from(), msg.index());
-//                }
-//            }
-//            else {
-//                rsp_msg_type = raft::MessageType::MsgApp;
-//            }
-//
-//            if (0 == next_catchup_index && msg.reject()) {
-//                assert(raft::MessageType::MsgNull == rsp_msg_type);
-//                auto next_explore_index = 
-//                    replicate_.NextExploreIndex(
-//                            msg.from(), min_index_, max_index_);
-//                if (0 == next_explore_index) {
-//                    logerr("INFO: follower_id %u no need "
-//                            "explore index %" PRIu64, 
-//                            msg.from(), msg.index());
-//                }
-//            }
-//            else {
-//                rsp_msg_type = raft::MessageType::MsgHeartbeat;
-//                logerr("INFO: follower_id %u switch CatchUp to Explore", 
-//                        msg.from());
-//            }
+			rsp_msg_type = raft::MessageType::MsgApp;
         }
         break;
-    case raft::MessageType::MsgHeartbeatResp:
-        {
-            replicate_.UpdateReplicateState(
-                    msg.from(), !msg.reject(), msg.index());
-
-            auto next_explore_index = 
-                replicate_.NextExploreIndex(
-                        msg.from(), min_index_, max_index_);
-            printf ( "msg.index %u next_explore_index %u\n", 
-                    static_cast<uint32_t>(msg.index()), 
-                    static_cast<uint32_t>(next_explore_index) );
-            if (0 != next_explore_index) {
-                assert(next_explore_index != msg.index());
-                rsp_msg_type = raft::MessageType::MsgHeartbeat;
-                break;
-            }
-
-            assert(0 == next_explore_index);
-            auto next_catchup_index = 
-                replicate_.NextCatchUpIndex(
-                    msg.from(), min_index_, max_index_);
-            if (0 != next_catchup_index) {
-                assert(0 < next_catchup_index);
-                rsp_msg_type = raft::MessageType::MsgApp;
-                logerr("INFO: follower_id %u switch Explore to CatchUp", 
-                        msg.from());
-            }
-        }
-        break;
-
     default:
         break;
     }
 
-    return rsp_msg_type;
+	return std::make_tuple(rsp_msg_type, need_mem);
 }
 
 std::tuple<int, std::unique_ptr<raft::Message>>
@@ -179,77 +128,64 @@ RaftDiskCatchUp::buildRspMsg(
         {
             rsp_msg = cutils::make_unique<raft::Message>();
             assert(nullptr != rsp_msg);
-            auto next_catchup_index = 
-                replicate_.NextCatchUpIndex(
-                        req_msg.from(), min_index_, max_index_);
-            assert(0 < next_catchup_index);
-            rsp_msg->set_index(next_catchup_index);
-            int ret = 0;
-            std::unique_ptr<raft::HardState> hs = nullptr;
-            int max_size = std::min<int>(
-                    max_index_ + 1 - next_catchup_index, 10) + 1;
-            printf ( "max_size %d\n", max_size );
-            std::tie(ret, hs) = readcb_(
-                    logid_, next_catchup_index-1, max_size);
-            if (0 != ret) {
-                return std::make_tuple(ret, nullptr);
-            }
 
-            assert(0 == ret);
-            assert(nullptr != hs);
-            assert(0 < hs->entries_size());
-            int idx = 1 == next_catchup_index ? 0 : 1;
-            for (; idx < hs->entries_size(); ++idx) {
-                const raft::Entry& disk_entry = hs->entries(idx);
-                assert(0 < disk_entry.term());
-                assert(0 < disk_entry.index());
-                printf ( "index %u\n", (uint32_t)disk_entry.index() );
-                auto entry = rsp_msg->add_entries();
-                assert(nullptr != entry);
-                *entry = disk_entry;
-            }
+			uint64_t next_index = 0;
+			if (req_msg.reject()) {
+				next_index = std::min(req_msg.index(), req_msg.reject_hint() + 1);
+				next_index = std::max(uint64_t{1}, next_index);
+			}
+			else {
+				next_index = req_msg.index() + 1;
+			}
 
-            assert(0 < rsp_msg->entries_size());
-            assert(rsp_msg->index() == rsp_msg->entries(0).index());
-            if (1 == next_catchup_index) {
-                rsp_msg->set_log_term(0);
-            }
-            else {
-                rsp_msg->set_log_term(hs->entries(0).term());
-            }
-            // TODO: add commit_index && commit_term ?
-        }
-        break;
+			assert(0 < next_index);
+			assert(next_index - 1 <= max_index_);
+			int max_size = std::min<int>(
+					max_index_ + 1 - next_index, 30) + 1;
+			if (req_msg.reject()) {
+				max_size = 1 == next_index ? 1 : 2;
+			}
 
-     case raft::MessageType::MsgHeartbeat:
-        {
-            rsp_msg = cutils::make_unique<raft::Message>();
-            assert(nullptr != rsp_msg);
-            auto next_explore_index = 
-                replicate_.NextExploreIndex(
-                        req_msg.from(), min_index_, max_index_);
-            assert(1 < next_explore_index);
-            assert(min_index_ < next_explore_index);
-            assert(next_explore_index <= max_index_ + 1);
-            assert(req_msg.index() != next_explore_index);
-            rsp_msg->set_index(next_explore_index);
+			assert(0 < max_size);
+			int ret = 0;
+			std::unique_ptr<raft::HardState> hs;
+			std::tie(ret, hs) = readcb_(
+					logid_, 1 == next_index ? 1 : next_index - 1, max_size);
+			if (0 != ret) {
+				logerr("readcb_ logid %lu next_index %lu max_size %d", 
+						logid_, next_index, max_size);
+				return std::make_tuple(ret, nullptr);
+			}
 
-            int ret = 0;
-            std::unique_ptr<raft::HardState> hs = nullptr;
-            std::tie(ret, hs) = readcb_(
-                    logid_, next_explore_index-1, 1);
-            if (0 != ret) {
-                return std::make_tuple(ret, nullptr);
-            }
+			assert(0 == ret);
+			assert(nullptr != hs);
+			assert(0 < hs->entries_size());
+			int idx = 1 == next_index ? 0 : 1;
+			for (; idx < hs->entries_size(); ++idx) {
+				const auto& disk_entry = hs->entries(idx);
+				assert(0 < disk_entry.term());
+				assert(0 < disk_entry.index());
+				if (1 == next_index) {
+					assert(next_index + idx == disk_entry.index());
+				}
+				else {
+					assert(1 < next_index);
+					assert(next_index + idx == disk_entry.index() + 1);
+				}
 
-            assert(0 == ret);
-            assert(nullptr != hs);
-            assert(1 == hs->entries_size());
-            assert(next_explore_index - 1 == hs->entries(0).index());
-            rsp_msg->set_log_term(hs->entries(0).term());
+				auto entry = rsp_msg->add_entries();
+				*entry = disk_entry;
+				if (entry->index() <= disk_commit_index_) {
+					rsp_msg->set_commit_index(entry->index());
+					rsp_msg->set_commit_term(entry->term());
+				}
+			}
 
-            // TODO: commit_index && commit_term
-        }
+			rsp_msg->set_index(next_index - 1);
+			rsp_msg->set_log_term(
+					0 == rsp_msg->index() ? 0 : hs->entries(0).term());
+			assert(disk_commit_index_ >= max_index_);
+	    }
         break;
     default:
         break;
@@ -265,6 +201,27 @@ RaftDiskCatchUp::buildRspMsg(
     }
 
     return std::make_tuple(0, std::move(rsp_msg));
+}
+
+void RaftDiskCatchUp::Update(
+		uint64_t term, 
+		uint64_t max_catch_up_index, 
+		uint64_t min_disk_index, 
+		uint64_t disk_commit_index)
+{
+	logerr("logid %" PRIu64 " PREV: term %" PRIu64 " max_index %" PRIu64 
+			" min_index %" PRIu64 " false_commit %" PRIu64, 
+			logid_, term_, max_index_, min_index_, disk_commit_index_);
+	logerr("logid %" PRIu64 " NEW : term %" PRIu64 " max_index %" PRIu64 
+			" min_index %" PRIu64 " false commit %" PRIu64, 
+			logid_, term, max_catch_up_index, min_disk_index, disk_commit_index);
+	term_ = std::max(term, term_);
+	max_index_ = std::max(max_index_, max_catch_up_index);
+	min_index_ = std::max(min_index_, min_disk_index);
+	disk_commit_index_ = std::max(disk_commit_index_, disk_commit_index);
+	if (0 == min_index_) {
+		assert(0 == max_index_);
+	}
 }
 
 } // namespace raft

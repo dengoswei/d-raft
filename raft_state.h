@@ -58,7 +58,20 @@ public:
 
     uint64_t GetLogTerm(uint64_t log_index) const;
 
-    raft::Replicate* GetReplicate();
+    // raft::Replicate* GetReplicate();
+
+	// uint64_t GetMinusIndexLogTerm() const;
+
+	uint64_t GetLogId() const;
+
+	raft::RaftMem& GetRaftMem() {
+		return raft_mem_;
+	}
+
+	const raft::RaftMem& GetRaftMem() const {
+		return raft_mem_;
+	}
+	
 
 private:
     raft::RaftMem& raft_mem_;

@@ -22,10 +22,8 @@ TEST(MTElectionTest, EmptyState)
         bool already_leader = 
             raft::RaftRole::LEADER == mapRaft.at(testid)->GetRole();
 
-        std::vector<std::unique_ptr<raft::Message>> vecMsg;
-        vecMsg.push_back(nullptr);
-        vecMsg[0] = trigger_timeout(mapRaft, testid);
-        assert(nullptr != vecMsg[0]);
+        auto vecMsg = trigger_timeout(mapRaft, testid);
+		assert(size_t{2} == vecMsg.size());
 
         loop_until(mapRaft, vecMsg);
         if (true == already_leader) {

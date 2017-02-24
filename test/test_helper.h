@@ -56,17 +56,18 @@ bool make_leader(
         std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
         uint32_t next_leader_id);
 
-std::unique_ptr<raft::Message>
+std::vector<std::unique_ptr<raft::Message>>
 trigger_timeout(
         std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft,
         uint32_t id);
 
-std::unique_ptr<raft::Message>
+std::vector<std::unique_ptr<raft::Message>>
 set_value(
         raft::RaftMem& raft_mem, 
         const std::string& value, uint64_t reqid);
 
-std::unique_ptr<raft::Message>
+// std::unique_ptr<raft::Message>
+std::vector<std::unique_ptr<raft::Message>>
 apply_msg(
         std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& mapRaft, 
         const raft::Message& msg);
@@ -172,11 +173,14 @@ private:
 };
 
 
-std::unique_ptr<raft::RaftDisk>
-build_raft_disk(uint32_t id, FakeDiskStorage& storage);
+//std::unique_ptr<raft::RaftDisk>
+//build_raft_disk(uint32_t id, FakeDiskStorage& storage);
 
 std::unique_ptr<raft::RaftDiskCatchUp>
 build_raft_disk_c(
-        uint32_t selfid, uint32_t catch_up_id, 
-        uint64_t term, uint64_t max_index, uint64_t min_index, 
+        uint32_t selfid, uint64_t term, 
+		uint64_t max_index, uint64_t min_index, uint64_t disk_commit_index, 
         FakeDiskStorage& storage);
+
+
+void set_progress_replicate(raft::RaftMem& raft_mem);
