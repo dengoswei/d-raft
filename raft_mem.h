@@ -10,11 +10,6 @@
 #include "raft.pb.h"
 #include "random_utils.h"
 
-
-namespace leveldb {
-	class Slice;
-} // namespace leveldb;
-
 namespace raft {
 
 
@@ -82,29 +77,12 @@ public:
                     const std::vector<std::string>& vec_value, 
                     const std::vector<uint64_t>& vec_reqid);
 
-	std::tuple<
-		std::unique_ptr<raft::Message>, 
-		std::unique_ptr<raft::HardState>, 
-		std::unique_ptr<raft::SoftState>>
-			SetValue(
-					const std::vector<leveldb::Slice>& vec_value, 
-					const std::vector<uint64_t>& vec_reqid);
-
     // prop_req msg, hs, sf, mk, rsp_msg_type
     std::tuple<
         std::unique_ptr<raft::Message>, 
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>>
             SetValue(const std::string& value, uint64_t reqid);
-
-
-	// TODO
-	std::tuple<
-		std::unique_ptr<raft::Message>, 
-		std::unique_ptr<raft::HardState>, 
-		std::unique_ptr<raft::SoftState>>
-			SetValue(const leveldb::Slice& value, uint64_t reqid);
-
 
     // : 
     // servers process incoming RPC requests without consulting 

@@ -7,7 +7,7 @@
 #include "raft_state.h"
 #include "raft_config.h"
 #include "progress.h"
-#include "leveldb/slice.h"
+#include "hassert.h"
 
 
 namespace {
@@ -2082,32 +2082,13 @@ int RaftMem::Init(
     return 0;
 }
 
-std::tuple<
-    std::unique_ptr<raft::Message>, 
-    std::unique_ptr<raft::HardState>, 
-    std::unique_ptr<raft::SoftState>>
-RaftMem::SetValue(
-        const std::vector<std::string>& vec_value, 
-        const std::vector<uint64_t>& vec_reqid)
-{
-	std::vector<leveldb::Slice> vec_slice_value;
-	vec_slice_value.reserve(vec_value.size());
-	for (size_t idx = 0; idx < vec_value.size(); ++idx) {
-		const std::string& value = vec_value[idx];
-		vec_slice_value.emplace_back(value.data(), value.size());
-	}
-
-	assert(vec_slice_value.size() == vec_value.size());
-	assert(vec_slice_value.size() == vec_reqid.size());
-	return SetValue(vec_slice_value, vec_reqid);
-}
 
 std::tuple<
 	std::unique_ptr<raft::Message>, 
 	std::unique_ptr<raft::HardState>, 
 	std::unique_ptr<raft::SoftState>>
 RaftMem::SetValue(
-		const std::vector<leveldb::Slice>& vec_value, 
+		const std::vector<std::string>& vec_value, 
 		const std::vector<uint64_t>& vec_reqid)
 {
     assert(raft::RaftRole::LEADER == role_);
@@ -2156,23 +2137,12 @@ RaftMem::SetValue(
 }
 
 
-
-std::tuple<
-    std::unique_ptr<raft::Message>, 
-    std::unique_ptr<raft::HardState>, 
-    std::unique_ptr<raft::SoftState>>
-RaftMem::SetValue(
-        const std::string& value, uint64_t reqid)
-{
-	return SetValue(leveldb::Slice(value.data(), value.size()), reqid);
-}
-
 std::tuple<
 	std::unique_ptr<raft::Message>, 
 	std::unique_ptr<raft::HardState>, 
 	std::unique_ptr<raft::SoftState>>
 RaftMem::SetValue(
-		const leveldb::Slice& value, uint64_t reqid)
+		const std::string& value, uint64_t reqid)
 {
 	assert(raft::RaftRole::LEADER == role_);
 
