@@ -2,14 +2,17 @@
 CPPFLAGS += -isystem $(GTEST_DIR)/include -std=c++11 -stdlib=libc++
 CXXFLAGS += -g -Wall -Wextra -D TEST_DEBUG
 
+TESTS = election_test follower_test candidate_test leader_test \
+		replicate_test mt_election_test mt_app_test raft_disk_test raft_disk_test_c raft_config_test
 
-TESTS = election_test follower_test candidate_test leader_test replicate_test mt_election_test mt_app_test raft_disk_test raft_disk_test_c
-
-INCLS += -I../ -I../raftpb 
-INCLS += -I../../cutils
+INCLS += -I../ 
+INCLS += -I../build
+INCLS += -I../cutils
+INCLS += -I/usr/local/Cellar/protobuf/3.3.0/include
 #INCLS += -I$(HOME)/open-src/github.com/microsoft/GSL/include
-INCLS += -I$(HOME)/project/include
-LINKS += -L$(HOME)/project/lib
+#INCLS += -I$(HOME)/project/include
+#LINKS += -L$(HOME)/project/lib
+LINKS += -L/usr/local/lib
 LINKS += -lpthread -lprotobuf
 
 GTEST_HEADERS = $(GTEST_DIR)/include/gtest/*.h \
@@ -18,9 +21,9 @@ GTEST_HEADERS = $(GTEST_DIR)/include/gtest/*.h \
 CPPCOMPILE = $(CXX) $(CPPFLAGS) $(CXXFLAGS) $< $(INCLS) -c -o $@
 BUILDEXE = $(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $^ $(LINKS)
 
-PROTOS_PATH = ../raftpb
-PROTOC = $(HOME)/project/bin/protoc
-
+#PROTOS_PATH = ../raftpb
+#PROTOC = $(HOME)/project/bin/protoc
+#
 all: $(TESTS)
 
 clean :
@@ -77,8 +80,11 @@ raft_disk_test: raft_disk_test.o test_helper.o gtest_main.a ../libdraft.a
 raft_disk_test_c: raft_disk_test_c.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
-%.pb.cc: %.proto
-	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=../raftpb/ $<
+raft_config_test: raft_config_test.o gtest_main.a ../build/libd-raft.a
+	$(BUILDEXE)
+
+#%.pb.cc: %.proto
+#	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=../raftpb/ $<
 
 
 %.o:%.cc

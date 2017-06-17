@@ -66,6 +66,12 @@ enum MessageType {
     MsgInvalidTerm     = 13;
 }
 
+message Node {
+    required uint32 svr_id = 1;
+    required uint32 svr_ip = 2;
+    required uint32 svr_port = 3;
+}
+
 message Message {
     required MessageType type        = 1;
     required uint64      logid       = 2;
@@ -89,12 +95,13 @@ message Message {
 	optional uint32      prev_entries_size = 15;
 	optional bool        one_shot_mark     = 16;
 
-	repeated uint32      peer_set   = 17;
+    repeated Node nodes = 17;
 }
 
 message SoftState {
     optional uint32 role = 1;
     optional uint64 leader_id = 2;
+    optional ClusterConfig config = 3;
 }
 
 message MetaInfo {
@@ -113,5 +120,11 @@ message HardState {
 
 message ConfState {
 	repeated uint32 nodes = 1;
+}
+
+message ClusterConfig {
+    required uint64 index = 1;
+    required uint32 max_id = 2;
+    repeated Node nodes = 3;
 }
 

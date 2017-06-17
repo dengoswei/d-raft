@@ -58,16 +58,23 @@ private:
 				bool)>;
 
 public:
+    
+    RaftMem(
+        uint64_t logid, 
+        uint32_t selfid);
+
     RaftMem(
         uint64_t logid, 
         uint32_t selfid, 
         uint32_t election_tick_ms, 
 		uint32_t hb_tick_ms);
 
+
     ~RaftMem();
 
     int Init(
-			const raft::HardState& hard_state);
+            const raft::ClusterConfig& commit_config, 
+			std::unique_ptr<raft::HardState> hard_state);
 
     std::tuple<
         std::unique_ptr<raft::Message>, 
