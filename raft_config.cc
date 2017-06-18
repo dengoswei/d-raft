@@ -14,10 +14,28 @@ void RaftConfig::Apply(
         const raft::SoftState& soft_state, 
         uint64_t commited_index)
 {
+    {
+        // check
+        uint64_t index = 0;
+        for (int idx = 0; idx < soft_state.configs_size(); ++idx) {
+            const auto& config = soft_state.configs(idx);
+            assert(index < config.index());
+            index = config.index();
+        }
+    }
+
+    if (soft_state.drop_pending()) {
+        assert(nullptr != pending_);
+        pending_ = nullptr; // drop pending
+    }
+
     std::unique_ptr<raft::ClusterConfig> new_config;
-    if (soft_state.has_config()) {
+    if (0 < soft_state.configs_size()) {
+        // mark final
+        int fidx = soft_state.configs_size() - 1;
+        assert(0 <= fidx);
         new_config = cutils::make_unique<
-            raft::ClusterConfig>(soft_state.config());
+            raft::ClusterConfig>(soft_state.configs(fidx));
         assert(nullptr != new_config);
         assert(is_valid(*new_config));
     }
@@ -25,30 +43,59 @@ void RaftConfig::Apply(
     if (nullptr != new_config) {
         if (new_config->index() <= commited_index) {
             config_ = std::move(new_config);
-            pending_config_ = nullptr; // must be force reset anyway
+            pending_ = nullptr; // must be force reset anyway
         }
         else {
             // new_config.index >= commited_index;
-            config_ = std::move(pending_config_);
-            pending_config_ = std::move(new_config);
+            if (1 < soft_state.configs_size()) {
+                // more the 1..
+                int pidx = soft_state.configs_size() - 2;
+                assert(0 <= pidx);
+                assert(config_->index() < 
+                        soft_state.configs(pidx).index());
+                config_ = cutils::make_unique<
+                    raft::ClusterConfig>(soft_state.configs(pidx));
+                assert(nullptr != config_);
+                assert(config_->index() < new_config->index());
+            }
+            else {
+                // if nullptr != pending_; config_ = pending_
+                // pending_ = new_config
+                assert(1 == soft_state.configs_size());
+                if (nullptr != pending_) {
+                    assert(pending_->index() <= commited_index);
+                    assert(nullptr != config_);
+                    assert(config_->index() < pending_->index());
+                    config_ = std::move(pending_);
+                }
+                // else => nothing change;
+            }
+
+            pending_ = std::move(new_config);
+            assert(nullptr != config_);
+            assert(nullptr != pending_);
         }
     }
 
     assert(nullptr == new_config);
     assert(nullptr != config_);
     assert(config_->index() <= commited_index);
-    if (nullptr != pending_config_) {
-        assert(pending_config_->index() > config_->index());
-        assert(pending_config_->index() > commited_index);
+    if (nullptr != pending_) {
+        assert(pending_->index() > config_->index());
+        if (pending_->index() <= commited_index) {
+            config_ = std::move(pending_);
+        }
+
+        assert(pending_->index() > commited_index);
     }
 }
 
 const raft::ClusterConfig* RaftConfig::GetConfig() const 
 {
-    if (nullptr != pending_config_) {
+    if (nullptr != pending_) {
         assert(nullptr != config_);
-        assert(pending_config_->index() > config_->index());
-        return pending_config_.get();
+        assert(pending_->index() > config_->index());
+        return pending_.get();
     }
 
     return config_.get();
@@ -63,7 +110,36 @@ RaftConfig::GetCommitConfig() const
 const raft::ClusterConfig* 
 RaftConfig::GetPendingConfig() const 
 {
-    return pending_config_.get();
+    return pending_.get();
+}
+
+bool RaftConfig::IsMember(uint32_t peer) const 
+{
+    auto config = GetConfig();
+    assert(nullptr != config);
+    for (int idx = 0; idx < config->nodes_size(); ++idx) {
+        const auto& node = config->nodes(idx);
+        if (node.svr_id() == peer) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+raft::Node 
+RaftConfig::Get(uint32_t peer, const raft::Node& def_node) const 
+{
+    auto config = GetConfig();
+    assert(nullptr != config);
+    for (int idx = 0; idx < config->nodes_size(); ++idx) {
+        const auto& node = config->nodes(idx);
+        if (peer == node.svr_id()) {
+            return node;
+        }
+    }
+
+    return def_node;
 }
 
 

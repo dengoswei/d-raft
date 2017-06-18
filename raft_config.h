@@ -33,9 +33,13 @@ public:
     const raft::ClusterConfig* GetCommitConfig() const;
     const raft::ClusterConfig* GetPendingConfig() const;
 
+    bool IsMember(uint32_t peer) const;
+
+    raft::Node Get(uint32_t peer, const raft::Node& def_node) const;
+
 private:
     std::unique_ptr<raft::ClusterConfig> config_;
-    std::unique_ptr<raft::ClusterConfig> pending_config_;
+    std::unique_ptr<raft::ClusterConfig> pending_;
 }; // class RaftConfig
 
 

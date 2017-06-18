@@ -198,8 +198,6 @@ public:
 
     bool IsMajority(int cnt) const;
 
-    const std::set<uint32_t>& GetVoteFollowerSet() const;
-
     uint64_t GetDiskMinIndex() const;
 
 	void RecvCatchUp();
@@ -214,7 +212,8 @@ public:
 		return map_progress_;
 	}
 
-	const std::map<uint32_t, std::unique_ptr<raft::Progress>>& GetProgress() const {
+	const std::map<uint32_t, 
+          std::unique_ptr<raft::Progress>>& GetProgress() const {
 		return map_progress_;
 	}
 
@@ -225,6 +224,12 @@ public:
 	}
 
 	bool IsReplicateStall() const;
+
+    const raft::ClusterConfig* GetConfig() const;
+
+    const raft::ClusterConfig* GetPendingConfig() const;
+
+    bool IsMember(uint32_t peer) const;
 
 private:
     void setRole(uint64_t next_term, uint32_t role);

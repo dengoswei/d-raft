@@ -95,13 +95,15 @@ message Message {
 	optional uint32      prev_entries_size = 15;
 	optional bool        one_shot_mark     = 16;
 
-    repeated Node nodes = 17;
+    optional Node from_node = 17;
+    repeated Node nodes = 18;
 }
 
 message SoftState {
     optional uint32 role = 1;
     optional uint64 leader_id = 2;
-    optional ClusterConfig config = 3;
+    optional bool drop_pending = 3;
+    repeated ClusterConfig configs = 4;
 }
 
 message MetaInfo {
