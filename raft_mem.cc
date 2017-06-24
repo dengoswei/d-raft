@@ -976,6 +976,9 @@ onStepMessage(
             int major_yes_cnt = 
                 raft_mem.UpdateVote(
                         msg.term(), msg.from(), !msg.reject());
+            printf ( "from %u major_yes_cnt %d vote %u Majority(+1) %d\n", 
+                    msg.from(), major_yes_cnt, raft_state.GetVote(msg.term()), 
+                    raft_mem.IsMajority(major_yes_cnt+1) );
             if (false == raft_mem.IsMajority(major_yes_cnt)) {
                 // check local vote
                 if (0 >= major_yes_cnt || 
@@ -1410,13 +1413,41 @@ onNewBuildRsp(
     
     case raft::MessageType::MsgApp:
         {
+            assert(nullptr == rsp_msg);
+            if (0 == req_msg.from()) {
+                // broadcast MsgApp: usally after become a new leader
+                rsp_msg = cutils::make_unique<raft::Message>();
+                assert(nullptr != rsp_msg);
+                rsp_msg->set_index(raft_state.GetCommit());
+                rsp_msg->set_log_term(
+                        raft_state.GetLogTerm(rsp_msg->index()));
+                if (raft_state.GetCommit() < raft_state.GetMaxIndex()) {
+                    auto index = rsp_msg->index() + 1;
+                    const auto mem_entry = 
+                        raft_state.At(index - raft_state.GetMinIndex());
+                    assert(nullptr != mem_entry);
+                    assert(0 < mem_entry->term());
+                    assert(mem_entry->index() == index);
+                    auto new_entry = rsp_msg->add_entries();
+                    *new_entry = *mem_entry;
+                }
+
+                if (0 < raft_state.GetCommit()) {
+                    rsp_msg->set_commit_index(raft_state.GetCommit());
+                    rsp_msg->set_commit_term(
+                            raft_state.GetLogTerm(rsp_msg->commit_index()));
+                }
+
+                break;
+            }
+
+            assert(0 < req_msg.from());
 			auto progress = raft_mem.GetProgress(req_msg.from());
 			assert(nullptr != progress);
 
 			if (progress->IsPause()) {
 				assert(
                     raft::ProgressState::PROBE == progress->GetState());
-				rsp_msg = nullptr; // discard;
 				break;
 			}
 
@@ -1934,7 +1965,8 @@ std::unique_ptr<raft::Message>
 RaftMem::BuildBroadcastRspMsg(raft::MessageType rsp_msg_type)
 {
     if (raft::MessageType::MsgVote != rsp_msg_type &&
-            raft::MessageType::MsgHeartbeat != rsp_msg_type) {
+            raft::MessageType::MsgHeartbeat != rsp_msg_type && 
+            raft::MessageType::MsgApp != rsp_msg_type) {
         return nullptr;
     }
 
@@ -2143,14 +2175,7 @@ bool RaftMem::IsMajority(int cnt) const
     assert(nullptr != cluster_config);
 
     assert(3 <= cluster_config->nodes_size());
-    const int major_cnt = (cluster_config->nodes_size() / 2) + 
-        ((0 == cluster_config->nodes_size() % 2) ? 0 : 1) + 1;
-
-//    // TODO
-//    // assume 3 node
-//    const int major_cnt = (
-//            vote_follower_set_.size() / 2) + 
-//        ((0 == vote_follower_set_.size() % 2) ? 0 : 1) + 1;
+    const int major_cnt = (cluster_config->nodes_size() / 2) + 1; 
     logerr ( "%d %d cnt %d other %d\n", 
             cluster_config->nodes_size(), 
             cluster_config->nodes_size() / 2, 

@@ -51,4 +51,7 @@ raft::Message build_prop_msg(
 raft::Message build_apprsp_msg(
         const raft::RaftMem& raft_mem, uint32_t from);
 
+raft::Message build_votersp_msg(
+        const raft::RaftMem& raft_mem, uint32_t from);
+
 

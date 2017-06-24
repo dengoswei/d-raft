@@ -197,3 +197,16 @@ raft::Message build_apprsp_msg(
     return msg;
 }
 
+raft::Message build_votersp_msg(
+        const raft::RaftMem& raft_mem, uint32_t from)
+{
+    raft::Message msg;
+    msg.set_type(raft::MessageType::MsgVoteResp);
+    msg.set_logid(raft_mem.GetLogId());
+    msg.set_term(raft_mem.GetTerm());
+    msg.set_to(raft_mem.GetSelfId());
+    msg.set_from(from);
+    msg.set_reject(false);
+    return msg;
+}
+
