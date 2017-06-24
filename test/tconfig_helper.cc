@@ -28,6 +28,7 @@ raft::RaftOption default_option()
     raft::RaftOption option;
     option.election_tick = 10;
     option.hb_tick = 3;
+    return option;
 }
 
 

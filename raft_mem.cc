@@ -725,33 +725,25 @@ onStepMessage(
     return std::make_tuple(false, rsp_msg_type, false);
 }
 
-
 // follower
 std::unique_ptr<raft::Message>
-onBuildRsp(
+onNewBuildRsp(
         raft::RaftMem& raft_mem, 
         const raft::Message& req_msg, 
-        const std::unique_ptr<raft::HardState>& hard_state, 
-        const std::unique_ptr<raft::SoftState>& soft_state, 
-		uint32_t rsp_peer_id, 
-        const raft::MessageType rsp_msg_type, 
-		bool /* no_null */)
+        const raft::MessageType rsp_msg_type)
 {
-	assert(0 < rsp_peer_id);
-	assert(rsp_peer_id == req_msg.from());
+    std::unique_ptr<raft::HardState> hard_state; // nullptr;
+    std::unique_ptr<raft::SoftState> soft_state;
+    raft::RaftState raft_state(raft_mem, hard_state, soft_state);
 
-    raft::RaftState raft_state(raft_mem, hard_state, soft_state);    
-    assert(raft::RaftRole::FOLLOWER == raft_state.GetRole());
-
-    std::unique_ptr<raft::Message> 
-        rsp_msg = cutils::make_unique<raft::Message>();
+    auto rsp_msg = cutils::make_unique<raft::Message>();
     assert(nullptr != rsp_msg);
     switch (rsp_msg_type) {
 
     case raft::MessageType::MsgInvalidTerm:
         {
             assert(req_msg.term() < raft_state.GetTerm());
-            rsp_msg->set_term(raft_state.GetTerm());
+            rsp_msg->set_term(raft_mem.GetTerm());
         }
         break;
 
@@ -809,28 +801,22 @@ onBuildRsp(
 
 			int req_entries_size = req_msg.entries_size();
 			uint64_t req_max_index = 0 == req_entries_size ? 
-				req_msg.index() : req_msg.entries(req_entries_size-1).index();
+				req_msg.index() : 
+                req_msg.entries(req_entries_size-1).index();
 			rsp_msg->set_index(req_max_index); // !!!
 
             if (raft_state.IsMatch(req_msg.index(), req_msg.log_term())) {
                 rsp_msg->set_reject(false); 
                 assert(0 == raft_state.GetCommit() || 
-                        raft_state.GetMinIndex() <= raft_state.GetCommit());
-				if (nullptr != hard_state && 0 < hard_state->entries_size()) {
-					uint64_t hs_max_index = 
-						hard_state->entries(hard_state->entries_size()-1).index();
-					if (hs_max_index > req_max_index) {
-						logerr("ADVANCE: adjust rsp max_index from %lu to %lu", 
-								req_max_index, hs_max_index);
-						rsp_msg->set_index(hs_max_index);
-					}
-				}
+                    raft_state.GetMinIndex() <= raft_state.GetCommit());
+                rsp_msg->set_index(raft_state.GetMaxIndex());
             }
             else {
 				assert(0 < req_msg.index());
                 rsp_msg->set_reject(true);
 
-				assert(raft_state.GetCommit() <= raft_state.GetMaxIndex());
+				assert(raft_state.GetCommit() <= 
+                        raft_state.GetMaxIndex());
 				// check max index term
 				uint64_t reject_hint = raft_state.GetCommit();
 				if (raft_state.GetTerm() == 
@@ -861,23 +847,22 @@ onBuildRsp(
     if (nullptr != rsp_msg) {
         rsp_msg->set_type(rsp_msg_type);
         rsp_msg->set_logid(req_msg.logid());
-        rsp_msg->set_to(rsp_peer_id);
-        rsp_msg->set_from(req_msg.to());
-        if (false == rsp_msg->has_term()) {
-            rsp_msg->set_term(req_msg.term());
+        rsp_msg->set_to(req_msg.from());
+        rsp_msg->set_from(raft_mem.GetSelfId());
+        rsp_msg->set_term(raft_state.GetTerm());
+        if (req_msg.disk_mark()) {
+            rsp_msg->set_disk_mark(true);
         }
 
-		if (req_msg.disk_mark()) {
-			rsp_msg->set_disk_mark(true);
-		}
-
-		if (req_msg.one_shot_mark()) {
-			rsp_msg->set_one_shot_mark(true);
-		}
+        if (req_msg.one_shot_mark()) {
+            rsp_msg->set_one_shot_mark(true);
+        }
     }
 
-    return std::move(rsp_msg);
+    return rsp_msg;
 }
+
+// follower
 
 } // namespace follower
 
@@ -1119,23 +1104,16 @@ onStepMessage(
 
 // candidate
 std::unique_ptr<raft::Message>
-onBuildRsp(
+onNewBuildRsp(
         raft::RaftMem& raft_mem, 
         const raft::Message& req_msg, 
-        const std::unique_ptr<raft::HardState>& hard_state, 
-        const std::unique_ptr<raft::SoftState>& soft_state, 
-		uint32_t rsp_peer_id, 
-        const raft::MessageType rsp_msg_type, 
-		bool /* no_null */)
+        const raft::MessageType rsp_msg_type)
 {
-	assert(0 < rsp_peer_id);
-	assert(raft_mem.GetSelfId() != rsp_peer_id);
-
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
     raft::RaftState raft_state(raft_mem, hard_state, soft_state);
-    assert(raft::RaftRole::CANDIDATE == raft_state.GetRole());
 
-    std::unique_ptr<raft::Message>
-        rsp_msg = cutils::make_unique<raft::Message>();
+    auto rsp_msg = cutils::make_unique<raft::Message>();
     assert(nullptr != rsp_msg);
 
     switch (rsp_msg_type) {
@@ -1145,7 +1123,8 @@ onBuildRsp(
             rsp_msg->set_term(raft_state.GetTerm());
             rsp_msg->set_index(raft_state.GetMaxIndex());
             // assert(0 < rsp_msg->index());
-            rsp_msg->set_log_term(raft_state.GetLogTerm(rsp_msg->index()));
+            rsp_msg->set_log_term(
+                    raft_state.GetLogTerm(rsp_msg->index()));
         }
         break;
 
@@ -1156,7 +1135,8 @@ onBuildRsp(
             assert(req_msg.term() == raft_state.GetTerm());
             // assert check
             assert(canVoteYes(raft_state, 
-                        req_msg.term(), req_msg.index(), req_msg.log_term()));
+                        req_msg.term(), 
+                        req_msg.index(), req_msg.log_term()));
 
 			uint32_t leader_id = raft_state.GetLeaderId(req_msg.term());
 			assert(0 == leader_id);
@@ -1182,14 +1162,15 @@ onBuildRsp(
     if (nullptr != rsp_msg) {
         rsp_msg->set_type(rsp_msg_type);
         rsp_msg->set_logid(req_msg.logid());
-        rsp_msg->set_from(req_msg.to());
-		rsp_msg->set_to(rsp_peer_id);
+		rsp_msg->set_to(req_msg.from());
+        rsp_msg->set_from(raft_mem.GetSelfId());
         assert(rsp_msg->has_term());
     }
 
     return std::move(rsp_msg);
 }
 
+// candidate
 } // namespace candidate
 
 
@@ -1414,31 +1395,27 @@ onStepMessage(
 
 // leader
 std::unique_ptr<raft::Message>
-onBuildRsp(
+onNewBuildRsp(
         raft::RaftMem& raft_mem, 
         const raft::Message& req_msg, 
-        const std::unique_ptr<raft::HardState>& hard_state, 
-        const std::unique_ptr<raft::SoftState>& soft_state, 
-		uint32_t rsp_peer_id, 
-        const raft::MessageType rsp_msg_type, 
-		bool no_null)
+        const raft::MessageType rsp_msg_type)
 {
-	assert(0 < rsp_peer_id);
-	assert(raft_mem.GetSelfId() != rsp_peer_id);
-
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
     raft::RaftState raft_state(raft_mem, hard_state, soft_state);
     assert(raft::RaftRole::LEADER == raft_state.GetRole());
 
-    std::unique_ptr<raft::Message> rsp_msg = nullptr;
+    std::unique_ptr<raft::Message> rsp_msg;
     switch (rsp_msg_type) {
     
     case raft::MessageType::MsgApp:
         {
-			auto progress = raft_mem.GetProgress(rsp_peer_id);
+			auto progress = raft_mem.GetProgress(req_msg.from());
 			assert(nullptr != progress);
 
-			if (false == no_null && progress->IsPause()) {
-				assert(raft::ProgressState::PROBE == progress->GetState());
+			if (progress->IsPause()) {
+				assert(
+                    raft::ProgressState::PROBE == progress->GetState());
 				rsp_msg = nullptr; // discard;
 				break;
 			}
@@ -1448,8 +1425,10 @@ onBuildRsp(
 			if (1 < raft_state.GetMinIndex() && 
 					next_index - 1 < raft_state.GetMinIndex()) {
 				// need disk_replicate_;
-				logerr("TEST: broadcast: need disk replicate logid %lu min %lu next %lu", 
-						req_msg.logid(), raft_state.GetMinIndex(), next_index);
+				logerr("TEST: broadcast: need disk "
+                        "replicate logid %lu min %lu next %lu", 
+						req_msg.logid(), 
+                        raft_state.GetMinIndex(), next_index);
 				break;
 			}
 
@@ -1532,15 +1511,15 @@ onBuildRsp(
     if (nullptr != rsp_msg) {
         rsp_msg->set_type(rsp_msg_type);
         rsp_msg->set_logid(req_msg.logid());
-        rsp_msg->set_from(req_msg.to());
-		rsp_msg->set_to(rsp_peer_id);
-
+        rsp_msg->set_from(raft_mem.GetSelfId());
+		rsp_msg->set_to(req_msg.from());
         rsp_msg->set_term(raft_state.GetTerm());
     }
 
     return std::move(rsp_msg);
 }
 
+// leader
 } // namespace leader
 
 
@@ -1640,12 +1619,12 @@ RaftMem::RaftMem(
     map_step_handler_[
         raft::RaftRole::LEADER] = leader::onStepMessage;
 
-    map_build_rsp_handler_[
-        raft::RaftRole::FOLLOWER] = follower::onBuildRsp;
-    map_build_rsp_handler_[
-        raft::RaftRole::CANDIDATE] = candidate::onBuildRsp;
-    map_build_rsp_handler_[
-        raft::RaftRole::LEADER] = leader::onBuildRsp;
+    map_new_build_rsp_handler_[
+        raft::RaftRole::FOLLOWER] = follower::onNewBuildRsp;
+    map_new_build_rsp_handler_[
+        raft::RaftRole::CANDIDATE] = candidate::onNewBuildRsp;
+    map_new_build_rsp_handler_[
+        raft::RaftRole::LEADER] = leader::onNewBuildRsp;
 
     tmp_entry_cache_ = cutils::make_unique<raft::TmpEntryCache>();
     assert(nullptr != tmp_entry_cache_);
@@ -1911,103 +1890,96 @@ void RaftMem::ApplyState(
     return ;
 }
 
-
-std::unique_ptr<raft::Message> 
+std::unique_ptr<raft::Message>
 RaftMem::BuildRspMsg(
-        const raft::Message& msg, 
-        const std::unique_ptr<raft::HardState>& hard_state, 
-        const std::unique_ptr<raft::SoftState>& soft_state, 
-		uint32_t rsp_peer_id, 
-        const raft::MessageType rsp_msg_type, 
-		bool no_null)
+        const raft::Message& req_msg, 
+        const raft::MessageType rsp_msg_type)
 {
     if (raft::MessageType::MsgNull == rsp_msg_type) {
-        return nullptr; // nothing
+        return nullptr;
     }
 
-    auto role = raft::RaftRole::FOLLOWER;
-    {
-        raft::RaftState raft_state(*this, hard_state, soft_state);
-        role = raft_state.GetRole();
+    auto handler = map_new_build_rsp_handler_.at(GetRole());
+    assert(nullptr != handler);
+
+    auto rsp_msg = handler(*this, req_msg, rsp_msg_type);
+    if (nullptr == rsp_msg) {
+        return nullptr;
     }
 
-    assert(map_build_rsp_handler_.end() 
-            != map_build_rsp_handler_.find(role));
-    assert(nullptr != map_build_rsp_handler_.at(role));
-    auto rsp_msg = map_build_rsp_handler_.at(role)(
-            *this, msg, hard_state, soft_state, 
-			rsp_peer_id, rsp_msg_type, no_null);
-    if (nullptr != rsp_msg) {
-        RaftState raft_state(*this, hard_state, soft_state);
-        auto cluster_config = raft_state.GetConfig();
-        assert(nullptr != cluster_config);
-        if (0 != rsp_msg->to()) {
-            assert(0 == msg.from() || msg.from() == rsp_msg->to());
-            assert(0 == rsp_msg->nodes_size());
-            auto node = rsp_msg->add_nodes();
-            assert(nullptr != node);
-            *node = config_->Get(rsp_msg->to(), msg.from_node());
-        }
-        else {
-            assert(0 == rsp_msg->to());
-            for (int idx = 0; idx < cluster_config->nodes_size(); ++idx) {
-                const auto& node = cluster_config->nodes(idx);
-                if (selfid_ == node.svr_id()) {
-                    continue;
-                }
-
-                auto new_node = rsp_msg->add_nodes();
-                assert(nullptr != new_node);
-                *new_node = node;
-            }
-        }
-
-        assert(selfid_ == rsp_msg->from());
-        if (IsMember(selfid_)) {
-            auto node = rsp_msg->mutable_from_node();
-            assert(nullptr != node);
-            *node = config_->Get(
-                    rsp_msg->from(), raft::Node{});
-        }
+    assert(nullptr != rsp_msg);
+    // fill nodes;
+    if (0 != rsp_msg->to()) {
+        auto node = rsp_msg->add_nodes();
+        assert(nullptr != node);
+        *node = config_->Get(rsp_msg->to(), req_msg.from_node());
+        return rsp_msg;
     }
-	return rsp_msg;
+
+    assert(0 == rsp_msg->to());
+    for (const auto& node : GetConfigNodes()) {
+        if (GetSelfId() == node.svr_id()) {
+            continue;
+        }
+
+        auto new_node = rsp_msg->add_nodes();
+        assert(nullptr != new_node);
+        *new_node = node;
+    }
+
+    return rsp_msg;
 }
 
-std::vector<std::unique_ptr<raft::Message>>
-RaftMem::BuildBroadcastRspMsg(
-		const raft::Message& req_msg, 
-		const std::unique_ptr<raft::HardState>& hard_state, 
-		const std::unique_ptr<raft::SoftState>& soft_state, 
-		raft::MessageType rsp_msg_type)
+std::unique_ptr<raft::Message> 
+RaftMem::BuildBroadcastRspMsg(raft::MessageType rsp_msg_type)
 {
-	std::vector<std::unique_ptr<raft::Message>> vec_rsp_msg;
-	vec_rsp_msg.reserve(map_progress_.size());
+    if (raft::MessageType::MsgVote != rsp_msg_type &&
+            raft::MessageType::MsgHeartbeat != rsp_msg_type) {
+        return nullptr;
+    }
 
-	bool no_null = raft::MessageType::MsgApp == rsp_msg_type;
-	for (const auto& id_progress : map_progress_) {
-		uint32_t peer_id = id_progress.first;
-		if (peer_id == selfid_) {
-			continue;
-		}
+    auto handler = map_new_build_rsp_handler_.at(GetRole());
+    assert(nullptr != handler);
 
-		const auto& progress = id_progress.second;
-		assert(nullptr != progress);
-		auto rsp_msg = BuildRspMsg(
-				req_msg, hard_state, soft_state, peer_id, rsp_msg_type, no_null);
-		if (raft::MessageType::MsgApp != rsp_msg_type) {
-			assert(nullptr != rsp_msg);
-		}
+    raft::Message fake;
+    fake.set_logid(GetLogId());
+    fake.set_term(GetTerm());
+    fake.set_from(0);
+    fake.set_to(GetSelfId());
+    fake.set_index(GetMaxIndex());
+    auto rsp_msg = BuildRspMsg(fake, rsp_msg_type);
+    assert(nullptr != rsp_msg);
+    assert(0 < rsp_msg->nodes_size());
+    assert(rsp_msg_type == rsp_msg->type());
+    return rsp_msg;
+}
 
-		if (nullptr != rsp_msg) {
-			vec_rsp_msg.emplace_back(std::move(rsp_msg));
-		}
-	}
 
-	if (raft::MessageType::MsgApp != rsp_msg_type) {
-		assert(false == vec_rsp_msg.empty());
-	}
+std::vector<std::unique_ptr<raft::Message>>
+RaftMem::BuildAppMsg()
+{
+    assert(raft::RaftRole::LEADER == GetRole());
 
-	return vec_rsp_msg;
+    std::vector<std::unique_ptr<raft::Message>> vec_rsp_msg;
+
+    raft::Message fake;
+    fake.set_logid(GetLogId());
+    fake.set_term(GetTerm());
+    fake.set_to(GetSelfId());
+    fake.set_index(GetMaxIndex());
+    for (const auto& node : GetConfigNodes()) {
+        if (GetSelfId() == node.svr_id()) {
+            continue;
+        }
+
+        fake.set_from(node.svr_id());
+        auto rsp_msg = BuildRspMsg(fake, raft::MessageType::MsgApp);
+        if (nullptr != rsp_msg) {
+            vec_rsp_msg.push_back(std::move(rsp_msg));
+        }
+    }
+
+    return vec_rsp_msg;
 }
 
 uint64_t RaftMem::GetMinIndex() const
@@ -2523,6 +2495,19 @@ const raft::ClusterConfig* RaftMem::GetConfig() const
     }
 
     return config_->GetConfig();
+}
+
+std::vector<raft::Node> RaftMem::GetConfigNodes() const 
+{
+    auto cluster_config = GetConfig();
+    assert(nullptr != cluster_config);
+    std::vector<raft::Node> nodes;
+    nodes.reserve(cluster_config->nodes_size());
+    for (int idx = 0; idx < cluster_config->nodes_size(); ++idx) {
+        nodes.push_back(cluster_config->nodes(idx));
+    }
+
+    return nodes;
 }
 
 const raft::ClusterConfig* RaftMem::GetPendingConfig() const 

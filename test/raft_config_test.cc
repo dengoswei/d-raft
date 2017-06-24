@@ -6,6 +6,7 @@
 #include "raft_config.h"
 #include "mem_utils.h"
 #include "tconfig_helper.h"
+#include "test_helper.h"
 
 
 namespace {
