@@ -23,6 +23,12 @@ class Progress;
 class RaftConfig;
 class TmpEntryCache;
 
+struct RaftOption {
+    uint32_t election_tick = 0;
+    uint32_t hb_tick = 0;
+};
+
+
 class RaftMem {
 
 private:
@@ -61,13 +67,8 @@ public:
     
     RaftMem(
         uint64_t logid, 
-        uint32_t selfid);
-
-    RaftMem(
-        uint64_t logid, 
         uint32_t selfid, 
-        uint32_t election_tick_ms, 
-		uint32_t hb_tick_ms);
+        const RaftOption& option);
 
 
     ~RaftMem();

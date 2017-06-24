@@ -1347,10 +1347,11 @@ onStepMessage(
 						progress->BecomeReplicate();
 					}
 
-					if (progress->GetNext() == raft_state.GetMaxIndex() + 1 && 
-							0 < progress->GetMatched()) {
-						rsp_msg_type = raft::MessageType::MsgNull;
-					}
+                    // remove: rsp with new msg_app: (replicate entries or new commited);
+				//	if (progress->GetNext() == raft_state.GetMaxIndex() + 1 && 
+				//			0 < progress->GetMatched()) {
+				//		rsp_msg_type = raft::MessageType::MsgNull;
+				//	}
 				}
 				else {
 					if (progress->NeedResetByHBAppRsp()) {
@@ -1608,23 +1609,21 @@ namespace raft {
 RaftMem::RaftMem(
         uint64_t logid, 
         uint32_t selfid, 
-        uint32_t election_tick_tick, 
-		uint32_t hb_tick_tick)
-		// uint32_t hb_silence_timeout)
+        const raft::RaftOption& option)
     : logid_(logid)
     , selfid_(selfid)
-	, base_election_tick_(election_tick_tick)
-	, timeout_gen_(0, election_tick_tick / 2)
+	, base_election_tick_(option.election_tick)
+	, timeout_gen_(0, option.election_tick / 2)
 	, election_tick_(0)
 	, election_deactive_tick_(0)
-	, hb_tick_(hb_tick_tick)
+	, hb_tick_(option.hb_tick)
 	, hb_deactive_tick_(0)
     , config_(nullptr)
 {
 	assert(0 < selfid_);
-	assert(0 < election_tick_tick);
-	assert(0 < hb_tick_tick);
-	assert(hb_tick_tick < election_tick_tick);
+	assert(0 < option.election_tick);
+	assert(0 < option.hb_tick);
+    assert(option.hb_tick <= option.election_tick);
 	
 	election_tick_ = base_election_tick_ + timeout_gen_();
     map_timeout_handler_[
@@ -1943,7 +1942,7 @@ RaftMem::BuildRspMsg(
         auto cluster_config = raft_state.GetConfig();
         assert(nullptr != cluster_config);
         if (0 != rsp_msg->to()) {
-            assert(msg.from() == rsp_msg->to());
+            assert(0 == msg.from() || msg.from() == rsp_msg->to());
             assert(0 == rsp_msg->nodes_size());
             auto node = rsp_msg->add_nodes();
             assert(nullptr != node);

@@ -3,7 +3,8 @@ CPPFLAGS += -isystem $(GTEST_DIR)/include -std=c++11 -stdlib=libc++
 CXXFLAGS += -g -Wall -Wextra -D TEST_DEBUG
 
 TESTS = election_test follower_test candidate_test leader_test \
-		replicate_test mt_election_test mt_app_test raft_disk_test raft_disk_test_c raft_config_test
+		replicate_test mt_election_test mt_app_test \
+		raft_disk_test raft_disk_test_c raft_config_test tconfig_test
 
 INCLS += -I../ 
 INCLS += -I../build
@@ -27,7 +28,7 @@ BUILDEXE = $(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ $^ $(LINKS)
 all: $(TESTS)
 
 clean :
-	rm -f $(TESTS) gtest.a gtest_main.a *.o 
+	rm -f $(TESTS) *.a *.o 
 
 # Builds gtest.a and gtest_main.a.
 
@@ -53,6 +54,9 @@ gtest.a : gtest-all.o
 gtest_main.a : gtest-all.o gtest_main.o
 	$(AR) $(ARFLAGS) $@ $^
 
+raft_test.a: tconfig_helper.o test_helper.o
+	$(AR) $(ARFLAGS) $@ $^
+
 election_test: election_test.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
@@ -60,9 +64,6 @@ follower_test: follower_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
 candidate_test: candidate_test.o test_helper.o gtest_main.a ../libdraft.a
-	$(BUILDEXE)
-
-leader_test: leader_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
 replicate_test: replicate_test.o test_helper.o gtest_main.a ../libdraft.a
@@ -80,8 +81,15 @@ raft_disk_test: raft_disk_test.o test_helper.o gtest_main.a ../libdraft.a
 raft_disk_test_c: raft_disk_test_c.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
-raft_config_test: raft_config_test.o gtest_main.a ../build/libd-raft.a
+raft_config_test: raft_config_test.o tconfig_helper.o gtest_main.a ../build/libd-raft.a
 	$(BUILDEXE)
+
+tconfig_test: tconfig_test.o tconfig_helper.o gtest_main.a ../build/libd-raft.a
+	$(BUILDEXE)
+
+leader_test: leader_test.o raft_test.a gtest_main.a ../build/libd-raft.a
+	$(BUILDEXE)
+
 
 #%.pb.cc: %.proto
 #	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=../raftpb/ $<
