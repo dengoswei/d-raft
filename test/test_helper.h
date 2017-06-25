@@ -35,6 +35,15 @@ void make_fake_candidate(raft::RaftMem& raft_mem);
 void set_progress_replicate(raft::RaftMem& raft_mem);
 
 
+std::unique_ptr<raft::Message>
+apply_msg(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& map_raft, 
+        const raft::Message& req_msg);
+
+void loop_until(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& map_raft, 
+        std::vector<std::unique_ptr<raft::Message>>& vec_msg);
+
 // msg helper function
 void add_entry(
         raft::Message& msg, 
@@ -66,3 +75,4 @@ raft::Message build_app_msg(
         uint64_t index, 
         uint32_t from, 
         uint32_t entry_cnt);
+

@@ -14,3 +14,6 @@ cd build
 cmake ../
 make -j24
 ```
+
+### test case
+deps: gtest

@@ -48,7 +48,6 @@ private:
             std::tuple<
                 std::unique_ptr<raft::HardState>, 
                 std::unique_ptr<raft::SoftState>, 
-                bool, 
                 raft::MessageType>(raft::RaftMem&, bool)>;
 
     using NewBuildRspHandler = 
@@ -87,7 +86,6 @@ public:
     // : 
     // servers process incoming RPC requests without consulting 
     // their current configurations.
-    // bool for broad-cast
     std::tuple<
         bool, raft::MessageType, bool>
             Step(
@@ -98,7 +96,7 @@ public:
     std::tuple<
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>, 
-        bool, raft::MessageType>
+        raft::MessageType>
             CheckTimeout(bool force_timeout);
 
     // 0 ==

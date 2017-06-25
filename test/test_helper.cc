@@ -172,6 +172,73 @@ void set_progress_replicate(raft::RaftMem& raft_mem)
     }
 }
 
+std::unique_ptr<raft::Message>
+apply_msg(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& map_raft, 
+        const raft::Message& req_msg)
+{
+    std::unique_ptr<raft::HardState> hard_state;
+    std::unique_ptr<raft::SoftState> soft_state;
+    bool broadcast = false;
+    auto rsp_msg_type = raft::MessageType::MsgNull;
+    bool need_disk_replicate = false;
+    assert(0 != req_msg.to());
+    if (map_raft.end() == map_raft.find(req_msg.to())) {
+        printf ( "IGNORE: to %u don't exist\n", req_msg.to() );
+        return nullptr;
+    }
+
+    auto& raft_mem = map_raft.at(req_msg.to());
+    std::tie(broadcast, rsp_msg_type, need_disk_replicate)
+        = raft_mem->Step(req_msg, hard_state, soft_state);
+    raft_mem->ApplyState(
+            std::move(hard_state), std::move(soft_state));
+    if (false == broadcast) {
+        return raft_mem->BuildRspMsg(req_msg, rsp_msg_type);
+    }
+
+    return raft_mem->BuildBroadcastRspMsg(rsp_msg_type);
+}
+
+void loop_until(
+        std::map<uint32_t, std::unique_ptr<raft::RaftMem>>& map_raft, 
+        std::vector<std::unique_ptr<raft::Message>>& vec_msg)
+{
+    if (vec_msg.empty()) {
+        return ;
+    }
+
+    std::vector<std::unique_ptr<raft::Message>> vec_rsp_msg;
+    for (auto& msg : vec_msg) {
+        assert(nullptr != msg);
+        if (0 != msg->to()) {
+            auto rsp_msg = apply_msg(map_raft, *msg);
+            if (nullptr != rsp_msg) {
+                vec_rsp_msg.push_back(std::move(rsp_msg));
+            }
+
+            continue;
+        }
+
+        assert(0 == msg->to());
+        for (int idx = 0; idx < msg->nodes_size(); ++idx) {
+            const auto& node = msg->nodes(idx);
+            msg->set_to(node.svr_id());
+            auto rsp_msg = apply_msg(map_raft, *msg);
+            if (nullptr != rsp_msg) {
+                vec_rsp_msg.push_back(std::move(rsp_msg));
+            }
+        }
+    }
+
+    if (vec_rsp_msg.empty()) {
+        return ;
+    }
+
+    loop_until(map_raft, vec_rsp_msg);
+    return ;
+}
+
 raft::Message
 build_null_msg(
         uint64_t logid, 

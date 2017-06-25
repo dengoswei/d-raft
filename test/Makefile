@@ -63,9 +63,6 @@ replicate_test: replicate_test.o test_helper.o gtest_main.a ../libdraft.a
 mt_election_test: mt_election_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
-mt_app_test: mt_app_test.o test_helper.o gtest_main.a ../libdraft.a
-	$(BUILDEXE)
-
 raft_disk_test: raft_disk_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
@@ -88,6 +85,9 @@ candidate_test: candidate_test.o raft_test.a gtest_main.a ../build/libd-raft.a
 	$(BUILDEXE)
 
 follower_test: follower_test.o raft_test.a gtest_main.a ../build/libd-raft.a
+	$(BUILDEXE)
+
+mt_app_test: mt_app_test.o raft_test.a gtest_main.a ../build/libd-raft.a
 	$(BUILDEXE)
 
 

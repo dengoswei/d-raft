@@ -420,11 +420,9 @@ TEST(FollowerTest, FollowerToCandidate)
     auto rsp_msg_type = raft::MessageType::MsgNull;
 
     std::tie(hard_state, 
-            soft_state, mark_broadcast, rsp_msg_type) = 
-        raft_mem->CheckTimeout(true);
+            soft_state, rsp_msg_type) = raft_mem->CheckTimeout(true);
     assert(nullptr != hard_state);
     assert(nullptr != soft_state);
-    assert(true == mark_broadcast);
     assert(raft::MessageType::MsgVote == rsp_msg_type);
 
     assert(hard_state->has_meta());

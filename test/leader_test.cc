@@ -142,12 +142,10 @@ TEST(LeaderTest, RepeateBroadcastHeartBeat)
         assert(term == raft_mem->GetTerm());
         std::tie(hard_state, 
                 soft_state, 
-                mark_broadcast, 
                 rsp_msg_type) = 
             raft_mem->CheckTimeout(true);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
-        assert(true == mark_broadcast);
         assert(raft::MessageType::MsgHeartbeat == rsp_msg_type);
 
         auto rsp_msg = raft_mem->BuildBroadcastRspMsg(rsp_msg_type);
@@ -160,7 +158,7 @@ TEST(LeaderTest, RepeateBroadcastHeartBeat)
     }
 }
 
-TEST(LeaderTest, MsgProp)
+TEST(LeaderTest, SetValue)
 {
     auto raft_mem = build_raft_mem(1, 3, 2, 1);
     assert(nullptr != raft_mem);
@@ -168,42 +166,25 @@ TEST(LeaderTest, MsgProp)
     make_fake_leader(*raft_mem);
 
 	set_progress_replicate(*raft_mem);
+    cutils::RandomStrGen<10, 30> gen;
     for (int testime = 0; testime < 10; ++testime) {
-        auto prop_msg = build_prop_msg(*raft_mem, 1);
-
+        
         std::unique_ptr<raft::HardState> hard_state;
-        std::unique_ptr<raft::SoftState> soft_state;
-        bool mark_broadcast = false;
-        auto rsp_msg_type = raft::MessageType::MsgNull;
-        bool need_disk_replicate = false;
-
-        std::tie(mark_broadcast, rsp_msg_type, need_disk_replicate)
-            = raft_mem->Step(prop_msg, hard_state, soft_state);
+        
+        auto ret = raft_mem->SetValue(hard_state, gen.Next(), 0);
+        assert(0 == ret);
         assert(nullptr != hard_state);
-        assert(nullptr == soft_state);
-        assert(true == mark_broadcast);
-        assert(raft::MessageType::MsgApp == rsp_msg_type);
-        assert(false == need_disk_replicate);
 
-        assert(prop_msg.entries_size() == hard_state->entries_size());
-        assert(prop_msg.entries(0) == hard_state->entries(0));
-
-        raft_mem->ApplyState(
-                std::move(hard_state), std::move(soft_state));
+        raft_mem->ApplyState(std::move(hard_state), nullptr);
 
         auto vec_rsp_msg = raft_mem->BuildAppMsg();
         assert(size_t{2} == vec_rsp_msg.size());
 		for (const auto& rsp_msg : vec_rsp_msg) {
 			assert(nullptr != rsp_msg);
-			assert(rsp_msg_type == rsp_msg->type());
 			assert(rsp_msg->term() == raft_mem->GetTerm());
-			assert(rsp_msg->index() == prop_msg.index());
 			assert(rsp_msg->log_term() == raft_mem->GetTerm());
 			assert(0 != rsp_msg->to());
 			assert(rsp_msg->entries_size() == 1);
-			assert(rsp_msg->entries(0) == prop_msg.entries(0));
-			assert(rsp_msg->entries(0).index() == 
-                    prop_msg.index() + 1);
 			assert(raft_mem->GetCommit() == rsp_msg->commit_index());
 			assert(raft_mem->GetTerm() == rsp_msg->commit_term());
 		}
@@ -211,40 +192,33 @@ TEST(LeaderTest, MsgProp)
 
     // batch
     for (int testime = 0; testime < 10; ++testime) {
-        auto prop_msg = build_prop_msg(*raft_mem, testime + 1); 
+        std::vector<std::string> vec_value;
+        std::vector<uint64_t> vec_reqid;
+        for (int idx = 0; idx < testime + 1; ++idx) {
+            vec_value.push_back(gen.Next());
+            vec_reqid.push_back(0);
+        }
 
         std::unique_ptr<raft::HardState> hard_state;
-        std::unique_ptr<raft::SoftState> soft_state;
-        bool mark_broadcast = false;
-        auto rsp_msg_type = raft::MessageType::MsgNull;
-        bool need_disk_replicate = false;
 
-        std::tie(mark_broadcast, rsp_msg_type, need_disk_replicate)
-            = raft_mem->Step(prop_msg, hard_state, soft_state);
+        auto ret = raft_mem->SetValue(hard_state, vec_value, vec_reqid);
+        assert(0 == ret);
         assert(nullptr != hard_state);
-        assert(nullptr == soft_state);
-        assert(true == mark_broadcast);
-        assert(raft::MessageType::MsgApp == rsp_msg_type);
-        assert(false == need_disk_replicate);
-
-        assert(prop_msg.entries_size() == hard_state->entries_size());
-        for (int idx = 0; idx < prop_msg.entries_size(); ++idx) {
-            assert(prop_msg.entries(idx) == hard_state->entries(idx));
+        
+        assert(vec_value.size() == hard_state->entries_size());
+        for (int idx = 0; idx < hard_state->entries_size(); ++idx) {
+            assert(vec_value[idx] == hard_state->entries(idx).data());
         }
         
-        raft_mem->ApplyState(
-                std::move(hard_state), std::move(soft_state));
+        raft_mem->ApplyState(std::move(hard_state), nullptr);
         auto vec_rsp_msg = raft_mem->BuildAppMsg();
 		assert(size_t{2} == vec_rsp_msg.size());
 		for (const auto& rsp_msg : vec_rsp_msg) {
 			assert(nullptr != rsp_msg);
-			assert(rsp_msg_type == rsp_msg->type());
 			assert(rsp_msg->term() == raft_mem->GetTerm());
-			assert(rsp_msg->index() == prop_msg.index());
 			assert(rsp_msg->log_term() == raft_mem->GetTerm());
-			assert(prop_msg.entries_size() == rsp_msg->entries_size());
 			for (int idx = 0; idx < rsp_msg->entries_size(); ++idx) {
-				assert(prop_msg.entries(idx) == rsp_msg->entries(idx));
+				assert(vec_value[idx] == rsp_msg->entries(idx).data());
 			}
 			assert(raft_mem->GetCommit() == rsp_msg->commit_index());
 			assert(raft_mem->GetTerm() == rsp_msg->commit_term());
@@ -254,6 +228,7 @@ TEST(LeaderTest, MsgProp)
 
 TEST(LeaderTest, MsgAppUntilMatch)
 {
+    cutils::RandomStrGen<10, 30> gen;
     // case 1
     {
         auto raft_mem = build_raft_mem(1, 3, 2, 5);
@@ -317,29 +292,15 @@ TEST(LeaderTest, MsgAppUntilMatch)
 
 		uint64_t max_index = raft_mem->GetMaxIndex();
 		{
-            auto prop_msg = build_prop_msg(*raft_mem, 1);
+            auto value = gen.Next();
 
 			std::unique_ptr<raft::HardState> hard_state;
-			std::unique_ptr<raft::SoftState> soft_state;
-			bool mark_broadcast = false;
-			auto rsp_msg_type = raft::MessageType::MsgNull;
-			bool need_disk_replicate = false;
-			
-            std::tie(mark_broadcast, rsp_msg_type, need_disk_replicate)
-                = raft_mem->Step(prop_msg, hard_state, soft_state);
-			assert(nullptr != hard_state);
-			assert(nullptr == soft_state);
-			assert(true == mark_broadcast);
-			assert(raft::MessageType::MsgApp == rsp_msg_type);
-			assert(false == need_disk_replicate);
+            auto ret = raft_mem->SetValue(hard_state, gen.Next(), 0);
+            assert(0 == ret);
+            assert(nullptr != hard_state);
 
             raft_mem->ApplyState(
                     std::move(hard_state), std::move(soft_state));
-
-			// stop by pause
-            prop_msg.set_from(2);
-			auto rsp_msg = raft_mem->BuildRspMsg(prop_msg, rsp_msg_type);
-			assert(nullptr == rsp_msg);
 		}
 
 		apprsp_msg.set_index(

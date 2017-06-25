@@ -418,7 +418,6 @@ int resolveEntries(
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
-    bool, 
     raft::MessageType>
 onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
 {
@@ -426,12 +425,12 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     assert(raft::RaftRole::FOLLOWER == raft_mem.GetRole());
     if (false == raft_mem.IsMember(raft_mem.GetSelfId())) {
         return std::make_tuple(
-                nullptr, nullptr, false, raft::MessageType::MsgNull);
+                nullptr, nullptr, raft::MessageType::MsgNull);
     }
 
     if (false == force_timeout && false == raft_mem.HasTimeout()) {
         return std::make_tuple(
-                nullptr, nullptr, false, raft::MessageType::MsgNull);
+                nullptr, nullptr, raft::MessageType::MsgNull);
     }
 
 	logerr("TEST: FOLLOWER timeout term %lu", raft_mem.GetTerm());
@@ -451,13 +450,14 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
         soft_state = cutils::make_unique<raft::SoftState>();
     assert(nullptr != soft_state);
 
-    soft_state->set_role(static_cast<uint32_t>(raft::RaftRole::CANDIDATE));
+    soft_state->set_role(
+            static_cast<uint32_t>(raft::RaftRole::CANDIDATE));
 
     raft_mem.ClearVoteMap();
     raft_mem.UpdateActiveTime();
     return std::make_tuple(
             std::move(hard_state), std::move(soft_state), 
-            true, raft::MessageType::MsgVote);
+            raft::MessageType::MsgVote);
 }
 
 // follower
@@ -882,7 +882,6 @@ namespace candidate {
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
-    bool, 
     raft::MessageType>
 onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
 {
@@ -890,7 +889,7 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     assert(raft_mem.IsMember(raft_mem.GetSelfId()));
     if (false == force_timeout && false == raft_mem.HasTimeout()) {
         return std::make_tuple(
-                nullptr, nullptr, false, raft::MessageType::MsgNull);
+                nullptr, nullptr, raft::MessageType::MsgNull);
     }
 
 	if (raft_mem.HasTimeout()) {
@@ -904,7 +903,7 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     if (false == raft_mem.IsMajority(vote_cnt)) {
         raft_mem.UpdateActiveTime();
         return std::make_tuple(
-                nullptr, nullptr, true, raft::MessageType::MsgVote);
+                nullptr, nullptr, raft::MessageType::MsgVote);
     }
 
     std::unique_ptr<raft::HardState>
@@ -921,8 +920,7 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     raft_mem.ClearVoteMap();
     raft_mem.UpdateActiveTime();
     return std::make_tuple(
-            std::move(hard_state), nullptr, 
-            true, raft::MessageType::MsgVote);
+            std::move(hard_state), nullptr, raft::MessageType::MsgVote);
 }
 
 // candicate
@@ -1185,7 +1183,6 @@ namespace leader {
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
-    bool, 
     raft::MessageType>
 onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
 {
@@ -1197,7 +1194,8 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
     raft::RaftState raft_state(raft_mem, nullptr, nullptr);
     uint64_t replicate_commit = calculateCommit(raft_state);
     if (raft_mem.GetCommit() < replicate_commit) {
-        ::updateCommit(hard_state, replicate_commit, raft_mem.GetMaxIndex());
+        ::updateCommit(
+                hard_state, replicate_commit, raft_mem.GetMaxIndex());
     }
 
     raft_mem.UpdateActiveTime();
@@ -1212,17 +1210,15 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
 		progress->Tick(); // else;
 	}
 
-	bool mark_broadcast = false;
 	auto rsp_msg_type = raft::MessageType::MsgNull;
 	if (force_timeout || raft_mem.IsHeartbeatTimeout()) {
-		mark_broadcast = true;
 		rsp_msg_type = raft::MessageType::MsgHeartbeat;
 		raft_mem.UpdateHeartBeatActiveTime();
 		// timeout => deactive progress state;
 	}
 
 	return std::make_tuple(
-			std::move(hard_state), nullptr, mark_broadcast, rsp_msg_type);
+			std::move(hard_state), nullptr, rsp_msg_type);
 }
 
 // leader
@@ -1265,9 +1261,6 @@ onSetValue(
     assert(0 < hard_state->entries_size());
     auto meta = hard_state->mutable_meta();
     assert(nullptr != meta);
-    meta->set_term(raft_state.GetTerm());
-    meta->set_vote(raft_state.GetVote(raft_state.GetTerm()));
-    meta->set_commit(raft_state.GetCommit());
     meta->set_min_index(raft_state.GetMinIndex());
     meta->set_max_index(raft_state.GetMaxIndex());
     return true;
@@ -1717,9 +1710,7 @@ RaftMem::RaftMem(
 RaftMem::~RaftMem() = default;
 
 std::tuple<
-    bool, 
-    raft::MessageType, 
-    bool>
+    bool, raft::MessageType, bool>
 RaftMem::Step(
         const raft::Message& msg, 
         std::unique_ptr<raft::HardState>& hard_state, 
@@ -1735,17 +1726,18 @@ RaftMem::Step(
     }
     assert(map_step_handler_.end() != map_step_handler_.find(role));
     assert(nullptr != map_step_handler_.at(role));
+
     return map_step_handler_.at(role)(*this, msg, hard_state, soft_state);
 }
 
 std::tuple<
     std::unique_ptr<raft::HardState>, 
     std::unique_ptr<raft::SoftState>, 
-    bool, 
     raft::MessageType>
 RaftMem::CheckTimeout(bool force_timeout)
 {
-    assert(map_timeout_handler_.end() != map_timeout_handler_.find(role_));
+    assert(map_timeout_handler_.end() != 
+            map_timeout_handler_.find(role_));
     assert(nullptr != map_timeout_handler_.at(role_));
 	Tick();
     return map_timeout_handler_.at(role_)(*this, force_timeout);

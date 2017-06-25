@@ -29,22 +29,18 @@ TEST(ElectionTest, FollowerStepTimeout)
     // case 1: no timeout
     {
         std::tie(hard_state, 
-                soft_state, 
-                mark_broadcast, rsp_msg_type) = raft.CheckTimeout(false);
+                soft_state, rsp_msg_type) = raft.CheckTimeout(false);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
-        assert(false == mark_broadcast);
         assert(raft::MessageType::MsgNull == rsp_msg_type);
     }
 
     // case 2: timeout
     {
         std::tie(hard_state, 
-                soft_state, 
-                mark_broadcast, rsp_msg_type) = raft.CheckTimeout(true);
+                soft_state, rsp_msg_type) = raft.CheckTimeout(true);
         assert(nullptr != hard_state);
         assert(nullptr != soft_state);
-        assert(true == mark_broadcast);
         assert(raft::MessageType::MsgVote == rsp_msg_type);
 
         assert(hard_state->has_meta());
@@ -89,8 +85,7 @@ TEST(ElectionTest, ZeroSuccElection)
     // step 1
     {
         std::tie(hard_state, 
-                soft_state, 
-				mark_broadcast, rsp_msg_type) = raft.CheckTimeout(true);
+                soft_state, rsp_msg_type) = raft.CheckTimeout(true);
         raft.ApplyState(std::move(hard_state), std::move(soft_state));
     }
 
@@ -161,7 +156,6 @@ TEST(ElectionTest, OneRejectElection)
     {
         std::tie(hard_state, 
                 soft_state, 
-                mark_broadcast, 
                 rsp_msg_type) = raft.CheckTimeout(true);
         assert(nullptr != hard_state);
         raft.ApplyState(std::move(hard_state), std::move(soft_state));
@@ -216,7 +210,6 @@ TEST(ElectionTest, AllRejectElection)
     {
         std::tie(hard_state, 
                 soft_state, 
-                mark_broadcast, 
                 rsp_msg_type) = raft_mem->CheckTimeout(true);
         raft_mem->ApplyState(
                 std::move(hard_state), std::move(soft_state));
@@ -243,11 +236,9 @@ TEST(ElectionTest, AllRejectElection)
     assert(raft::RaftRole::CANDIDATE == raft_mem->GetRole());
     std::tie(hard_state, 
             soft_state, 
-            mark_broadcast, 
             rsp_msg_type) = raft_mem->CheckTimeout(false);
     assert(nullptr == hard_state);
     assert(nullptr == soft_state);
-    assert(false == mark_broadcast);
     assert(raft::MessageType::MsgNull == rsp_msg_type);
     assert(uint64_t{2} == raft_mem->GetTerm());
 }
@@ -265,7 +256,7 @@ TEST(ElectionTest, StepTimeoutNothing)
 
     {
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, rsp_msg_type) = 
             raft_mem->CheckTimeout(true);
         assert(nullptr != hard_state);
         assert(nullptr != soft_state);
@@ -288,11 +279,9 @@ TEST(ElectionTest, StepTimeoutNothing)
     {
         std::tie(hard_state, 
                 soft_state, 
-                mark_broadcast, rsp_msg_type) = 
-            raft_mem->CheckTimeout(true);
+                rsp_msg_type) = raft_mem->CheckTimeout(true);
         assert(nullptr == hard_state);
         assert(nullptr == soft_state);
-        assert(true == mark_broadcast);
         assert(raft::MessageType::MsgVote == rsp_msg_type);
     }
 }
@@ -310,7 +299,7 @@ TEST(ElectionTest, StepTimeoutAfterAllReject)
 
     {
         std::tie(hard_state, 
-                soft_state, mark_broadcast, rsp_msg_type) = 
+                soft_state, rsp_msg_type) = 
             raft_mem->CheckTimeout(true);
         assert(nullptr != hard_state);
         raft_mem->ApplyState(
@@ -336,11 +325,9 @@ TEST(ElectionTest, StepTimeoutAfterAllReject)
     {
         std::tie(hard_state, 
                 soft_state, 
-                mark_broadcast, rsp_msg_type) = 
-            raft_mem->CheckTimeout(true);
+                rsp_msg_type) = raft_mem->CheckTimeout(true);
         assert(nullptr != hard_state);
         assert(nullptr == soft_state);
-        assert(true == mark_broadcast);
         assert(raft::MessageType::MsgVote == rsp_msg_type);
         assert(hard_state->has_meta());
         assert(uint64_t{3} == hard_state->meta().term());
@@ -378,12 +365,11 @@ TEST(ElectionTest, RandomNElection)
             bool need_disk_replicate = false;
 
             std::tie(hard_state, 
-                    soft_state, mark_broadcast, rsp_msg_type)
+                    soft_state, rsp_msg_type)
                 = candidate->CheckTimeout(true);
             assert(nullptr != hard_state);
             candidate->ApplyState(
                     std::move(hard_state), std::move(soft_state));
-            assert(true == mark_broadcast);
             assert(raft::MessageType::MsgVote == rsp_msg_type);
 
             auto vote_msg = candidate->BuildBroadcastRspMsg(rsp_msg_type);
