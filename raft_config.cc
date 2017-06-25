@@ -6,76 +6,178 @@
 
 namespace raft {
 
-RaftConfig::RaftConfig()
-{
-
-}
+RaftConfig::RaftConfig() = default;
 
 RaftConfig::~RaftConfig() = default;
 
 void RaftConfig::Apply(
-        const raft::ConfState* new_state, 
-        const bool has_commited)
+        const raft::SoftState& soft_state, 
+        uint64_t commited_index)
 {
-    if (nullptr == new_state) {
-        if (true == has_commited) {
-            assert(false == pending_.empty());
-            commited_.swap(pending_);
-            pending_.clear();
+    {
+        // check
+        uint64_t index = 0;
+        for (int idx = 0; idx < soft_state.configs_size(); ++idx) {
+            const auto& config = soft_state.configs(idx);
+            assert(index < config.index());
+            index = config.index();
+        }
+    }
+
+    if (soft_state.drop_pending()) {
+        assert(nullptr != pending_);
+        pending_ = nullptr; // drop pending
+    }
+
+    std::unique_ptr<raft::ClusterConfig> new_config;
+    if (0 < soft_state.configs_size()) {
+        // mark final
+        int fidx = soft_state.configs_size() - 1;
+        assert(0 <= fidx);
+        new_config = cutils::make_unique<
+            raft::ClusterConfig>(soft_state.configs(fidx));
+        assert(nullptr != new_config);
+        assert(is_valid(*new_config));
+    }
+
+    if (nullptr != new_config) {
+        if (new_config->index() <= commited_index) {
+            config_ = std::move(new_config);
+            pending_ = nullptr; // must be force reset anyway
+        }
+        else {
+            // new_config.index >= commited_index;
+            if (1 < soft_state.configs_size()) {
+                // more the 1..
+                int pidx = soft_state.configs_size() - 2;
+                assert(0 <= pidx);
+                assert(config_->index() < 
+                        soft_state.configs(pidx).index());
+                config_ = cutils::make_unique<
+                    raft::ClusterConfig>(soft_state.configs(pidx));
+                assert(nullptr != config_);
+                assert(config_->index() < new_config->index());
+            }
+            else {
+                // if nullptr != pending_; config_ = pending_
+                // pending_ = new_config
+                assert(1 == soft_state.configs_size());
+                if (nullptr != pending_) {
+                    assert(pending_->index() <= commited_index);
+                    assert(nullptr != config_);
+                    assert(config_->index() < pending_->index());
+                    config_ = std::move(pending_);
+                }
+                // else => nothing change;
+            }
+
+            pending_ = std::move(new_config);
+            assert(nullptr != config_);
+            assert(nullptr != pending_);
+        }
+    }
+
+    assert(nullptr == new_config);
+    assert(nullptr != config_);
+    assert(config_->index() <= commited_index);
+    if (nullptr != pending_) {
+        assert(pending_->index() > config_->index());
+        if (pending_->index() <= commited_index) {
+            config_ = std::move(pending_);
         }
 
-        return ;
+        assert(pending_->index() > commited_index);
     }
-
-    assert(nullptr != new_state);
-    std::set<uint32_t> new_pending;
-    for (int idx = 0; idx < new_state->nodes_size(); ++idx) {
-        new_pending.insert(new_state->nodes(idx));
-    }
-
-    assert(false == new_pending.empty());
-    if (true == has_commited) {
-        commited_.swap(new_pending);
-        pending_.clear();
-        return ;
-    }
-
-    assert(false == has_commited);
-    if (false == pending_.empty()) {
-        commited_.swap(pending_);
-        pending_.clear();
-    }
-
-    assert(true == pending_.empty());
-    // assert check
-    {
-        std::vector<uint32_t> vec_diff;
-        std::set_symmetric_difference(
-                commited_.begin(), commited_.end(), 
-                new_pending.begin(), new_pending.end(), 
-                std::back_insert_iterator<
-                    std::vector<uint32_t>>{vec_diff});
-        assert(size_t{1} >= vec_diff.size());
-    }
-
-    pending_.swap(new_pending);
 }
 
-void RaftConfig::Revert()
+const raft::ClusterConfig* RaftConfig::GetConfig() const 
 {
-    assert(false == commited_.empty());
-    assert(false == pending_.empty());
-    pending_.clear();
-}
-
-const std::set<uint32_t>& RaftConfig::GetNodeSet() const 
-{
-    if (false == pending_.empty()) {
-        return pending_;
+    if (nullptr != pending_) {
+        assert(nullptr != config_);
+        assert(pending_->index() > config_->index());
+        return pending_.get();
     }
 
-    assert(true == pending_.empty());
-    return commited_;
+    return config_.get();
+}
+
+const raft::ClusterConfig*
+RaftConfig::GetCommitConfig() const 
+{
+    return config_.get();
+}
+
+const raft::ClusterConfig* 
+RaftConfig::GetPendingConfig() const 
+{
+    return pending_.get();
+}
+
+bool RaftConfig::IsMember(uint32_t peer) const 
+{
+    auto config = GetConfig();
+    assert(nullptr != config);
+    for (int idx = 0; idx < config->nodes_size(); ++idx) {
+        const auto& node = config->nodes(idx);
+        if (node.svr_id() == peer) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+raft::Node 
+RaftConfig::Get(uint32_t peer, const raft::Node& def_node) const 
+{
+    auto config = GetConfig();
+    assert(nullptr != config);
+    for (int idx = 0; idx < config->nodes_size(); ++idx) {
+        const auto& node = config->nodes(idx);
+        if (peer == node.svr_id()) {
+            return node;
+        }
+    }
+
+    return def_node;
+}
+
+
+bool is_valid(const raft::ClusterConfig& config)
+{
+    assert(0 < config.index());
+    assert(0 < config.max_id());
+    assert(3 <= config.nodes_size());
+
+    std::set<uint32_t> unique_id;
+    std::set<std::pair<uint32_t, uint32_t>> unique_endpoint;
+    for (int idx = 0; idx < config.nodes_size(); ++idx) {
+        const auto& node = config.nodes(idx);
+        assert(unique_id.end() == unique_id.find(node.svr_id()));
+        assert(unique_endpoint.end() == 
+                unique_endpoint.find(
+                    std::make_pair(node.svr_ip(), node.svr_port())));
+        unique_id.insert(node.svr_id());
+        unique_endpoint.insert(
+                std::make_pair(node.svr_ip(), node.svr_port()));
+        assert(node.svr_id() <= config.max_id());
+    }
+
+    return true;
+}
+
+std::tuple<bool, raft::Node> 
+get(const raft::ClusterConfig& config, uint32_t peer)
+{
+    assert(is_valid(config));
+    for (int idx = 0; idx < config.nodes_size(); ++idx) {
+        const auto& node = config.nodes(idx);
+        if (node.svr_id() == peer) {
+            return std::make_tuple(true, node);
+        }
+    }
+
+    return std::make_tuple(false, raft::Node{});
 }
 
 } // namespace raft

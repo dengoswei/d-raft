@@ -286,12 +286,6 @@ bool RaftState::IsMatch(uint64_t log_index, uint64_t log_term) const
     return mem_entry->term() == log_term;
 }
 
-const std::set<uint32_t>& RaftState::GetVoteFollowerSet() const {
-    // TODO: config change ???
-
-    return raft_mem_.GetVoteFollowerSet();
-}
-
 //raft::Replicate* RaftState::GetReplicate() 
 //{
 //    return raft_mem_.GetReplicate();
@@ -321,6 +315,32 @@ uint64_t RaftState::GetLogTerm(uint64_t log_index) const
 
 uint64_t RaftState::GetLogId() const {
 	return raft_mem_.GetLogId();
+}
+
+const raft::ClusterConfig* RaftState::GetConfig() const
+{
+    if (nullptr != soft_state_ && 
+            0 < soft_state_->configs_size()) {
+        int fidx = soft_state_->configs_size() - 1;
+        assert(0 <= fidx);
+        return &(soft_state_->configs(fidx));
+    }
+
+    return raft_mem_.GetConfig();
+}
+
+bool RaftState::IsMember(uint32_t peer) const
+{
+    auto config = GetConfig();
+    assert(nullptr != config);
+    for (int idx = 0; idx < config->nodes_size(); ++idx) {
+        const auto& node = config->nodes(idx);
+        if (peer == node.svr_id()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 } // namespace raft;

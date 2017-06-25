@@ -12,6 +12,7 @@ class HardState;
 class SoftState;
 class RaftMem;
 class Replicate;
+class ClusterConfig;
 
 enum class RaftRole : uint32_t;
 
@@ -46,15 +47,14 @@ public:
     bool CanUpdateCommit(
             uint64_t msg_commit_index, uint64_t msg_commit_term) const;
 
-    bool UpdateVote(uint64_t vote_term, uint32_t candidate_id, bool vote_yes);
+    bool UpdateVote(
+            uint64_t vote_term, uint32_t candidate_id, bool vote_yes);
 
     bool CanWrite(int entries_size);
 
     bool IsLogEmpty() const;
 
     bool IsMatch(uint64_t log_index, uint64_t log_term) const;
-
-    const std::set<uint32_t>& GetVoteFollowerSet() const;
 
     uint64_t GetLogTerm(uint64_t log_index) const;
 
@@ -71,7 +71,10 @@ public:
 	const raft::RaftMem& GetRaftMem() const {
 		return raft_mem_;
 	}
-	
+
+    const raft::ClusterConfig* GetConfig() const;
+
+    bool IsMember(uint32_t peer) const;
 
 private:
     raft::RaftMem& raft_mem_;

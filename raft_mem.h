@@ -23,6 +23,12 @@ class Progress;
 class RaftConfig;
 class TmpEntryCache;
 
+struct RaftOption {
+    uint32_t election_tick = 0;
+    uint32_t hb_tick = 0;
+};
+
+
 class RaftMem {
 
 private:
@@ -42,52 +48,44 @@ private:
             std::tuple<
                 std::unique_ptr<raft::HardState>, 
                 std::unique_ptr<raft::SoftState>, 
-                bool, 
                 raft::MessageType>(raft::RaftMem&, bool)>;
 
-    // TODO
-    using BuildRspHandler = 
+    using NewBuildRspHandler = 
         std::function<
             std::unique_ptr<raft::Message>(
+                // TODO: const raft::RaftMem&
                 raft::RaftMem&, 
                 const raft::Message&, 
-                const std::unique_ptr<raft::HardState>&, 
-                const std::unique_ptr<raft::SoftState>&,
-                uint32_t, 
-                const raft::MessageType, 
-				bool)>;
+                const raft::MessageType)>;
 
 public:
+    
     RaftMem(
         uint64_t logid, 
         uint32_t selfid, 
-        uint32_t election_tick_ms, 
-		uint32_t hb_tick_ms);
+        const RaftOption& option);
+
 
     ~RaftMem();
 
     int Init(
-			const raft::HardState& hard_state);
+            const raft::ClusterConfig& commit_config, 
+			std::unique_ptr<raft::HardState> hard_state);
 
-    std::tuple<
-        std::unique_ptr<raft::Message>, 
-        std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>>
-            SetValue(
-                    const std::vector<std::string>& vec_value, 
-                    const std::vector<uint64_t>& vec_reqid);
+    int SetValue(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            const std::vector<std::string>& vec_value, 
+            const std::vector<uint64_t>& vec_reqid);
 
-    // prop_req msg, hs, sf, mk, rsp_msg_type
-    std::tuple<
-        std::unique_ptr<raft::Message>, 
-        std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>>
-            SetValue(const std::string& value, uint64_t reqid);
+    int SetValue(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            const std::string& value, 
+            uint64_t reqid);
+
 
     // : 
     // servers process incoming RPC requests without consulting 
     // their current configurations.
-    // bool for broad-cast
     std::tuple<
         bool, raft::MessageType, bool>
             Step(
@@ -98,7 +96,7 @@ public:
     std::tuple<
         std::unique_ptr<raft::HardState>, 
         std::unique_ptr<raft::SoftState>, 
-        bool, raft::MessageType>
+        raft::MessageType>
             CheckTimeout(bool force_timeout);
 
     // 0 ==
@@ -106,21 +104,20 @@ public:
             std::unique_ptr<raft::HardState> hard_state, 
             std::unique_ptr<raft::SoftState> soft_state);
 
-    std::unique_ptr<raft::Message> BuildRspMsg(
+    std::unique_ptr<raft::Message>
+        BuildRspMsg(
             const raft::Message& req_msg, 
-            const std::unique_ptr<raft::HardState>& hard_state, 
-            const std::unique_ptr<raft::SoftState>& soft_state, 
-			uint32_t rsp_peer_id, 
-            raft::MessageType rsp_msg_type, 
-			bool no_null);
+            raft::MessageType rsp_msg_type);
 
-	std::vector<std::unique_ptr<raft::Message>>
-		BuildBroadcastRspMsg(
-				const raft::Message& req_msg, 
-				const std::unique_ptr<raft::HardState>& hard_state, 
-				const std::unique_ptr<raft::SoftState>& soft_state, 
-				raft::MessageType rsp_msg_type);
+    // broadcast: 
+    // - heartbreat;
+    // - vote;
+    std::unique_ptr<raft::Message>
+        BuildBroadcastRspMsg(raft::MessageType rsp_msg_type);
 
+    // only used after set;
+    std::vector<std::unique_ptr<raft::Message>>
+        BuildAppMsg();
 
     size_t CompactLog(uint64_t new_min_index);
 
@@ -191,8 +188,6 @@ public:
 
     bool IsMajority(int cnt) const;
 
-    const std::set<uint32_t>& GetVoteFollowerSet() const;
-
     uint64_t GetDiskMinIndex() const;
 
 	void RecvCatchUp();
@@ -207,7 +202,8 @@ public:
 		return map_progress_;
 	}
 
-	const std::map<uint32_t, std::unique_ptr<raft::Progress>>& GetProgress() const {
+	const std::map<uint32_t, 
+          std::unique_ptr<raft::Progress>>& GetProgress() const {
 		return map_progress_;
 	}
 
@@ -218,6 +214,14 @@ public:
 	}
 
 	bool IsReplicateStall() const;
+
+    const raft::ClusterConfig* GetConfig() const;
+
+    const raft::ClusterConfig* GetPendingConfig() const;
+
+    std::vector<raft::Node> GetConfigNodes() const;
+
+    bool IsMember(uint32_t peer) const;
 
 private:
     void setRole(uint64_t next_term, uint32_t role);
@@ -251,7 +255,8 @@ private:
 
     std::map<raft::RaftRole, TimeoutHandler> map_timeout_handler_;
     std::map<raft::RaftRole, StepMessageHandler> map_step_handler_;
-    std::map<raft::RaftRole, BuildRspHandler> map_build_rsp_handler_;
+    std::map<raft::RaftRole, 
+        NewBuildRspHandler> map_new_build_rsp_handler_;
 
     uint32_t leader_id_ = 0; // soft state
 

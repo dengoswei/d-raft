@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <memory>
 #include <set>
+#include "raft.pb.h"
 
 
 
@@ -11,6 +12,8 @@ namespace raft {
 class ConfState;
 
 
+// IMPORTANT: ONLY ONE OPERATOR !!
+//
 // If server adopted Cnew only when they learned that Cnew
 // was commited, Raft leaders would have a difficult time knowing
 // when a majority of the old cluster had adopted it.
@@ -21,17 +24,29 @@ public:
 
     ~RaftConfig();
 
-    void Apply(const raft::ConfState* new_state, bool has_commited);
+    void Apply(
+            const raft::SoftState& soft_state, 
+            uint64_t commited_index);
 
-    void Revert();
+    const raft::ClusterConfig* GetConfig() const;
 
-    const std::set<uint32_t>& GetNodeSet() const;
+    const raft::ClusterConfig* GetCommitConfig() const;
+    const raft::ClusterConfig* GetPendingConfig() const;
+
+    bool IsMember(uint32_t peer) const;
+
+    raft::Node Get(uint32_t peer, const raft::Node& def_node) const;
 
 private:
-    std::set<uint32_t> commited_;
-    std::set<uint32_t> pending_;
+    std::unique_ptr<raft::ClusterConfig> config_;
+    std::unique_ptr<raft::ClusterConfig> pending_;
 }; // class RaftConfig
 
+
+bool is_valid(const raft::ClusterConfig& config);
+
+std::tuple<bool, raft::Node> 
+get(const raft::ClusterConfig& config, uint32_t peer);
 
 } // namespace raft
 
