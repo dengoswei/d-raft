@@ -1222,6 +1222,61 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
 }
 
 // leader
+bool 
+onSetConfig(
+        raft::RaftMem& raft_mem, 
+        std::unique_ptr<raft::HardState>& hard_state, 
+        std::unique_ptr<raft::SoftState>& soft_state, 
+        raft::ClusterConfig& new_config)
+{
+    raft::RaftState raft_state(raft_mem, hard_state, soft_state);
+    assert(raft::RaftRole::LEADER == raft_state.GetRole());
+
+    if (nullptr != soft_state || 
+            nullptr != raft_mem.GetPendingConfig()) {
+        return false;
+    }
+
+    assert(nullptr == soft_state);
+    assert(nullptr == raft_mem.GetPendingConfig());
+    if (nullptr == hard_state) {
+        hard_state = cutils::make_unique<raft::HardState>();
+        assert(nullptr != hard_state);
+    }
+
+    new_config.set_index(raft_state.GetMaxIndex() + 1);
+    std::string conf_data;
+    if (false == new_config.SerializeToString(&conf_data)) {
+        return false;
+    }
+
+    assert(false == conf_data.empty());
+    uint64_t max_index = raft_state.GetMaxIndex();
+    assert(raft_mem.GetTerm() == raft_state.GetTerm());
+    auto new_entry = hard_state->add_entries();
+    new_entry->set_type(raft::EntryType::EntryConfChange);
+    new_entry->set_term(raft_state.GetTerm());
+    new_entry->set_index(max_index + 1);
+    new_entry->set_reqid(0);
+    new_entry->set_data(conf_data.data(), conf_data.size());
+    assert(new_entry->index() == new_config.index());
+
+    auto meta = hard_state->mutable_meta();
+    assert(nullptr != meta);
+    meta->set_min_index(raft_state.GetMinIndex());
+    meta->set_max_index(raft_state.GetMaxIndex());
+
+    soft_state = cutils::make_unique<raft::SoftState>();
+    assert(nullptr != soft_state);
+    {
+        auto add_config = soft_state->add_configs();
+        assert(nullptr != add_config);
+        *add_config = new_config;
+    }
+    return true;
+}
+
+// leader
 bool
 onSetValue(
         raft::RaftMem& raft_mem, 
@@ -1954,6 +2009,9 @@ void RaftMem::ApplyState(
         if (soft_state->has_leader_id()) {
             updateLeaderId(next_term, soft_state->leader_id());
         }
+
+        assert(nullptr != config_);
+        config_->Apply(*soft_state, GetCommit());
     }
 
     // map_progress
@@ -2363,6 +2421,95 @@ RaftMem::SetValue(
     vec_value.push_back(value);
     vec_reqid.push_back(reqid);
     return SetValue(hard_state, vec_value, vec_reqid);
+}
+
+int RaftMem::AddConfig(
+        std::unique_ptr<raft::HardState>& hard_state, 
+        std::unique_ptr<raft::SoftState>& soft_state, 
+        const raft::Node& new_node)
+{
+    assert(0 < new_node.svr_id());
+    if (raft::RaftRole::LEADER != GetRole()) {
+        return -1;
+    }
+    
+    assert(raft::RaftRole::LEADER == GetRole());
+    if (IsMember(new_node.svr_id()) || 
+            nullptr != soft_state || 
+            nullptr != GetPendingConfig()) {
+        return -2;
+    }
+
+    assert(nullptr != GetConfig());
+    auto new_config = *GetConfig();
+    {
+        auto node = new_config.add_nodes();
+        assert(nullptr != node);
+        *node = new_node;
+        new_config.set_max_id(
+                std::max(new_config.max_id(), new_node.svr_id()));
+    }
+
+    if (false == leader::onSetConfig(
+                *this, hard_state, soft_state, new_config)) {
+        return -3; 
+    }
+
+    assert(nullptr != hard_state);
+    return 0;
+}
+
+int RaftMem::DelConfig(
+        std::unique_ptr<raft::HardState>& hard_state, 
+        std::unique_ptr<raft::SoftState>& soft_state, 
+        const raft::Node& del_node)
+{
+    assert(0 < del_node.svr_id());
+    if (raft::RaftRole::LEADER != GetRole()) {
+        return -1;
+    }
+
+    if (false == IsMember(del_node.svr_id()) || 
+            nullptr != soft_state || 
+            nullptr != GetPendingConfig()) {
+        return -2;
+    }
+
+    if (GetConfig()->nodes_size() <= 2) {
+        // can't del any more.. 
+        return -3;
+    }
+
+    raft::ClusterConfig new_config;
+    {
+        auto cluster_config = GetConfig();
+        assert(nullptr != cluster_config);
+        for (int idx = 0; 
+                idx < cluster_config->nodes_size(); ++idx) {
+            const auto& node = cluster_config->nodes(idx);
+            if (node.svr_id() == del_node.svr_id()) {
+                continue;
+            }
+
+            auto reserve_node = new_config.add_nodes();
+            assert(nullptr != reserve_node);
+            *reserve_node = node;
+        }
+
+        new_config.set_max_id(cluster_config->max_id());
+        new_config.set_index(0);
+        assert(new_config.nodes_size() + 1 == 
+                cluster_config->nodes_size());
+        assert(2 <= new_config.nodes_size());
+    }
+
+    if (false == leader::onSetConfig(
+                *this, hard_state, soft_state, new_config)) {
+        return -4;
+    }
+
+    assert(nullptr != hard_state);
+    return 0;
 }
 
 size_t RaftMem::CompactLog(uint64_t new_min_index)

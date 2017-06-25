@@ -82,6 +82,16 @@ public:
             const std::string& value, 
             uint64_t reqid);
 
+    int AddConfig(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            std::unique_ptr<raft::SoftState>& soft_state, 
+            const raft::Node& new_node);
+
+    int DelConfig(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            std::unique_ptr<raft::SoftState>& soft_state, 
+            const raft::Node& del_node);
+
 
     // : 
     // servers process incoming RPC requests without consulting 

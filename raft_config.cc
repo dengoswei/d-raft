@@ -147,7 +147,7 @@ bool is_valid(const raft::ClusterConfig& config)
 {
     assert(0 < config.index());
     assert(0 < config.max_id());
-    assert(3 <= config.nodes_size());
+    assert(2 <= config.nodes_size());
 
     std::set<uint32_t> unique_id;
     std::set<std::pair<uint32_t, uint32_t>> unique_endpoint;
