@@ -8,6 +8,24 @@
 #include "random_utils.h"
 #include "progress.h"
 
+
+namespace {
+
+uint64_t get_log_term(const raft::RaftMem& raft_mem, uint64_t index)
+{
+    if (0 == index) {
+        return 0;
+    }
+
+    assert(index >= raft_mem.GetMinIndex());
+    assert(index <= raft_mem.GetMaxIndex());
+    auto entry = raft_mem.At(index - raft_mem.GetMinIndex());
+    assert(nullptr != entry);
+    return entry->term();
+}
+
+}
+
 bool operator==(const raft::Entry& a, const raft::Entry& b)
 {
     std::string raw_a, raw_b;
@@ -122,6 +140,15 @@ void make_fake_leader(raft::RaftMem& raft_mem)
     raft_mem.ApplyState(nullptr, std::move(ss));
 }
 
+void make_fake_candidate(raft::RaftMem& raft_mem)
+{
+    auto ss = cutils::make_unique<raft::SoftState>();
+    assert(nullptr != ss);
+
+    ss->set_role(static_cast<uint32_t>(raft::RaftRole::CANDIDATE));
+    raft_mem.ApplyState(nullptr, std::move(ss));
+}
+
 void set_progress_replicate(raft::RaftMem& raft_mem)
 {
     auto& map_progress = raft_mem.GetProgress();
@@ -210,3 +237,67 @@ raft::Message build_votersp_msg(
     return msg;
 }
 
+
+raft::Message build_vote_msg(
+        const raft::RaftMem& raft_mem, uint32_t from)
+{
+    raft::Message msg;
+    msg.set_type(raft::MessageType::MsgVote);
+    msg.set_logid(raft_mem.GetLogId());
+    msg.set_term(raft_mem.GetTerm());
+    msg.set_to(raft_mem.GetSelfId());
+    msg.set_from(from);
+    msg.set_index(raft_mem.GetMaxIndex());
+    if (0 == raft_mem.GetMaxIndex()) {
+        msg.set_log_term(0);
+    }
+    else {
+        auto entry = raft_mem.At(
+                raft_mem.GetMaxIndex() - raft_mem.GetMinIndex());
+        assert(nullptr != entry);
+        assert(entry->index() == raft_mem.GetMaxIndex());
+        msg.set_log_term(entry->term());
+    }
+
+    return msg;
+}
+
+raft::Message build_hb_msg(
+        const raft::RaftMem& raft_mem, uint32_t from)
+{
+    raft::Message msg;
+    msg.set_type(raft::MessageType::MsgHeartbeat);
+    msg.set_term(raft_mem.GetTerm());
+    msg.set_logid(raft_mem.GetLogId());
+    msg.set_from(from);    
+    msg.set_to(raft_mem.GetSelfId());
+
+    msg.set_index(raft_mem.GetMaxIndex());
+    msg.set_log_term(get_log_term(raft_mem, msg.index()));
+    return msg;
+}
+
+raft::Message build_app_msg(
+        const raft::RaftMem& raft_mem, 
+        uint64_t index, 
+        uint32_t from, 
+        uint32_t entry_cnt)
+{
+    raft::Message msg;
+    msg.set_type(raft::MessageType::MsgApp);
+    msg.set_logid(raft_mem.GetLogId());
+    msg.set_term(raft_mem.GetTerm());
+    msg.set_to(raft_mem.GetSelfId());
+    msg.set_from(from);
+    
+    msg.set_index(index);
+    msg.set_log_term(get_log_term(raft_mem, msg.index()));
+    printf ( "msg index %lu log_term %lu\n", 
+            msg.index(), msg.log_term() );
+    cutils::RandomStrGen<10, 30> gen;
+    for (uint32_t cnt = 0; cnt < entry_cnt; ++cnt) {
+        add_entry(msg, raft_mem.GetTerm(), index + cnt + 1, gen.Next());
+    }
+
+    return msg;
+}

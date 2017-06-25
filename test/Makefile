@@ -57,12 +57,6 @@ gtest_main.a : gtest-all.o gtest_main.o
 raft_test.a: tconfig_helper.o test_helper.o
 	$(AR) $(ARFLAGS) $@ $^
 
-follower_test: follower_test.o test_helper.o gtest_main.a ../libdraft.a
-	$(BUILDEXE)
-
-candidate_test: candidate_test.o test_helper.o gtest_main.a ../libdraft.a
-	$(BUILDEXE)
-
 replicate_test: replicate_test.o test_helper.o gtest_main.a ../libdraft.a
 	$(BUILDEXE)
 
@@ -89,6 +83,13 @@ leader_test: leader_test.o raft_test.a gtest_main.a ../build/libd-raft.a
 
 election_test: election_test.o raft_test.a gtest_main.a ../build/libd-raft.a
 	$(BUILDEXE)
+
+candidate_test: candidate_test.o raft_test.a gtest_main.a ../build/libd-raft.a
+	$(BUILDEXE)
+
+follower_test: follower_test.o raft_test.a gtest_main.a ../build/libd-raft.a
+	$(BUILDEXE)
+
 
 #%.pb.cc: %.proto
 #	$(PROTOC) -I $(PROTOS_PATH) --cpp_out=../raftpb/ $<

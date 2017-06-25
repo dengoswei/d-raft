@@ -31,6 +31,7 @@ build_raft_mem(uint32_t node_cnt, uint64_t term, uint64_t commit_index);
 
 // 
 void make_fake_leader(raft::RaftMem& raft_mem);
+void make_fake_candidate(raft::RaftMem& raft_mem);
 void set_progress_replicate(raft::RaftMem& raft_mem);
 
 
@@ -54,4 +55,14 @@ raft::Message build_apprsp_msg(
 raft::Message build_votersp_msg(
         const raft::RaftMem& raft_mem, uint32_t from);
 
+raft::Message build_vote_msg(
+        const raft::RaftMem& raft_mem, uint32_t from);
 
+raft::Message build_hb_msg(
+        const raft::RaftMem& raft_mem, uint32_t from);
+
+raft::Message build_app_msg(
+        const raft::RaftMem& raft_mem, 
+        uint64_t index, 
+        uint32_t from, 
+        uint32_t entry_cnt);

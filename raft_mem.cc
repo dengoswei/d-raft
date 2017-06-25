@@ -353,6 +353,8 @@ int resolveEntries(
 		const raft::Entry* mem_entry = raft_state.At(mem_idx);
 		assert(nullptr != mem_entry);
 		assert(check_index == mem_entry->index());
+        printf ( "check_index %lu msg.log_term %lu mem_entry->term %lu\n", 
+                check_index, msg.log_term(), mem_entry->term() );
 		if (msg.log_term() != mem_entry->term()) {
 			// reject case
 			// must be the case !
@@ -529,7 +531,8 @@ onStepMessage(
         {
             mark_update_active_time = true;
             if (false == canVoteYes(
-                        raft_state, msg.term(), msg.index(), msg.log_term())) {
+                        raft_state, 
+                        msg.term(), msg.index(), msg.log_term())) {
                 break;
             }
 
@@ -1223,6 +1226,55 @@ onTimeout(raft::RaftMem& raft_mem, bool force_timeout)
 }
 
 // leader
+bool
+onSetValue(
+        raft::RaftMem& raft_mem, 
+        std::unique_ptr<raft::HardState>& hard_state, 
+        const std::vector<std::string>& vec_value, 
+        const std::vector<uint64_t>& vec_reqid)
+{
+    std::unique_ptr<raft::SoftState> soft_state;
+    raft::RaftState raft_state(raft_mem, hard_state, soft_state);
+    assert(raft::RaftRole::LEADER == raft_state.GetRole());
+
+    assert(vec_value.size() == vec_reqid.size());
+    assert(false == vec_value.empty());
+
+    if (false == raft_state.CanWrite(vec_value.size())) {
+        return false;
+    }
+
+    if (nullptr == hard_state) {
+        hard_state = cutils::make_unique<raft::HardState>();
+        assert(nullptr != hard_state);
+    }
+
+    assert(raft_mem.GetTerm() == raft_state.GetTerm());
+    uint64_t max_index = raft_state.GetMaxIndex();
+    for (size_t idx = 0; idx < vec_value.size(); ++idx) {
+        auto new_entry = hard_state->add_entries();
+        assert(nullptr != new_entry);
+        new_entry->set_type(raft::EntryType::EntryNormal);
+        new_entry->set_term(raft_state.GetTerm());
+        new_entry->set_index(max_index + idx + 1);
+        new_entry->set_reqid(vec_reqid[idx]);
+        new_entry->set_data(
+                vec_value[idx].data(), vec_value[idx].size());
+    }
+
+    assert(0 < hard_state->entries_size());
+    auto meta = hard_state->mutable_meta();
+    assert(nullptr != meta);
+    meta->set_term(raft_state.GetTerm());
+    meta->set_vote(raft_state.GetVote(raft_state.GetTerm()));
+    meta->set_commit(raft_state.GetCommit());
+    meta->set_min_index(raft_state.GetMinIndex());
+    meta->set_max_index(raft_state.GetMaxIndex());
+    return true;
+}
+
+
+// leader
 std::tuple<
     bool, 
     raft::MessageType, 
@@ -1263,37 +1315,37 @@ onStepMessage(
     auto rsp_msg_type = raft::MessageType::MsgNull;
     switch (msg.type()) {
 
-    case raft::MessageType::MsgProp:
-        {
-			assert(msg.index() == raft_state.GetMaxIndex());
-            if (0 == msg.entries_size()) {
-                break;  // do nothing
-            }
-
-            // must be in this state; => 
-            assert(raft_state.CanWrite(msg.entries_size()));
-
-            if (nullptr == hard_state) {
-                hard_state = cutils::make_unique<raft::HardState>();
-                assert(nullptr != hard_state);
-            }
-            assert(nullptr != hard_state);
-
-            uint64_t max_index = raft_state.GetMaxIndex();
-            for (int idx = 0; idx < msg.entries_size(); ++idx) {
-                const raft::Entry& msg_entry = msg.entries(idx);
-
-				assert(msg_entry.term() == raft_state.GetTerm());
-				assert(msg_entry.index() == max_index + idx + 1);
-                auto* new_entry = hard_state->add_entries();
-                assert(nullptr != new_entry);
-                *new_entry = msg_entry;
-            }
-            assert(hard_state->entries_size() >= msg.entries_size());
-            mark_broadcast = true;
-            rsp_msg_type = MessageType::MsgApp;
-        }
-        break;
+//    case raft::MessageType::MsgProp:
+//        {
+//			assert(msg.index() == raft_state.GetMaxIndex());
+//            if (0 == msg.entries_size()) {
+//                break;  // do nothing
+//            }
+//
+//            // must be in this state; => 
+//            assert(raft_state.CanWrite(msg.entries_size()));
+//
+//            if (nullptr == hard_state) {
+//                hard_state = cutils::make_unique<raft::HardState>();
+//                assert(nullptr != hard_state);
+//            }
+//            assert(nullptr != hard_state);
+//
+//            uint64_t max_index = raft_state.GetMaxIndex();
+//            for (int idx = 0; idx < msg.entries_size(); ++idx) {
+//                const raft::Entry& msg_entry = msg.entries(idx);
+//
+//				assert(msg_entry.term() == raft_state.GetTerm());
+//				assert(msg_entry.index() == max_index + idx + 1);
+//                auto* new_entry = hard_state->add_entries();
+//                assert(nullptr != new_entry);
+//                *new_entry = msg_entry;
+//            }
+//            assert(hard_state->entries_size() >= msg.entries_size());
+//            mark_broadcast = true;
+//            rsp_msg_type = MessageType::MsgApp;
+//        }
+//        break;
 
     case raft::MessageType::MsgAppResp:
         {
@@ -2283,107 +2335,42 @@ int RaftMem::Init(
 //}
 
 
-std::tuple<
-	std::unique_ptr<raft::Message>, 
-	std::unique_ptr<raft::HardState>, 
-	std::unique_ptr<raft::SoftState>>
+int 
 RaftMem::SetValue(
+        std::unique_ptr<raft::HardState>& hard_state, 
 		const std::vector<std::string>& vec_value, 
 		const std::vector<uint64_t>& vec_reqid)
 {
-    assert(raft::RaftRole::LEADER == role_);
 	assert(false == vec_value.empty());
     assert(vec_value.size() == vec_reqid.size());
-
-    auto prop_msg = cutils::make_unique<raft::Message>();
-    assert(nullptr != prop_msg);
-    prop_msg->set_type(raft::MessageType::MsgProp);
-    prop_msg->set_logid(logid_);
-    prop_msg->set_to(selfid_);
-    prop_msg->set_from(0);
-    prop_msg->set_term(term_);
-    uint64_t max_index = GetMaxIndex();
-    prop_msg->set_index(max_index);
-    prop_msg->set_log_term(
-            logs_.empty() ? 0 : logs_.back()->term());
-    for (size_t idx = 0; idx < vec_value.size(); ++idx) {
-        auto new_entry = prop_msg->add_entries();
-        assert(nullptr != new_entry);
-        new_entry->set_type(raft::EntryType::EntryNormal);
-        new_entry->set_term(prop_msg->term());
-        new_entry->set_index(prop_msg->index() + idx + 1);
-        new_entry->set_reqid(vec_reqid[idx]);
-        new_entry->set_data(vec_value[idx].data(), vec_value[idx].size());
+    if (raft::RaftRole::LEADER != GetRole()) {
+        return -1;
     }
 
-    assert(static_cast<
-            size_t>(prop_msg->entries_size()) == vec_value.size());
+    assert(raft::RaftRole::LEADER == GetRole());
+    if (false == leader::onSetValue(
+                *this, hard_state, vec_value, vec_reqid)) {
+        // reach limit
+        return -2;
+    }
 
-    std::unique_ptr<raft::HardState> hard_state;
-    std::unique_ptr<raft::SoftState> soft_state;
-    bool mark_broadcast = false;
-    auto rsp_msg_type = raft::MessageType::MsgNull;
-    bool need_disk_replicate = false;
-    std::tie(
-			mark_broadcast, rsp_msg_type, 
-            need_disk_replicate) = Step(*prop_msg, hard_state, soft_state);
     assert(nullptr != hard_state);
-    assert(nullptr == soft_state);
-    assert(true == mark_broadcast);
-    assert(raft::MessageType::MsgApp == rsp_msg_type);
-    assert(false == need_disk_replicate);
-    return std::make_tuple(
-            std::move(prop_msg), std::move(hard_state), std::move(soft_state));
+    assert(vec_value.size() <= 
+            static_cast<size_t>(hard_state->entries_size()));
+    return 0;
 }
 
-
-std::tuple<
-	std::unique_ptr<raft::Message>, 
-	std::unique_ptr<raft::HardState>, 
-	std::unique_ptr<raft::SoftState>>
+int
 RaftMem::SetValue(
+        std::unique_ptr<raft::HardState>& hard_state, 
 		const std::string& value, uint64_t reqid)
 {
-	assert(raft::RaftRole::LEADER == role_);
+    std::vector<std::string> vec_value;
+    std::vector<uint64_t> vec_reqid;
 
-    auto prop_msg = cutils::make_unique<raft::Message>();
-    assert(nullptr != prop_msg);
-
-    prop_msg->set_type(raft::MessageType::MsgProp);
-    prop_msg->set_logid(logid_);
-    prop_msg->set_to(selfid_);
-    prop_msg->set_from(0);
-    prop_msg->set_term(term_);
-
-    auto max_index = GetMaxIndex();
-    prop_msg->set_index(max_index);
-    prop_msg->set_log_term(
-            logs_.empty() ? 0 : logs_.back()->term());
-    {
-        auto new_entry = prop_msg->add_entries();
-        assert(nullptr != new_entry);
-        new_entry->set_type(raft::EntryType::EntryNormal);
-        new_entry->set_term(prop_msg->term());
-        new_entry->set_index(prop_msg->index() + 1);
-        new_entry->set_reqid(reqid);
-        new_entry->set_data(value.data(), value.size());
-    }
-    assert(1 == prop_msg->entries_size());
-
-    std::unique_ptr<raft::HardState> hard_state;
-    std::unique_ptr<raft::SoftState> soft_state;
-    bool mark_broadcast = false;
-    auto rsp_msg_type = raft::MessageType::MsgNull;
-    bool need_disk_replicate = false;
-    std::tie(mark_broadcast, rsp_msg_type, 
-            need_disk_replicate) = Step(*prop_msg, hard_state, soft_state);
-    assert(nullptr != hard_state);
-    assert(nullptr == soft_state);
-    assert(true == mark_broadcast);
-    assert(raft::MessageType::MsgApp == rsp_msg_type);
-    assert(false == need_disk_replicate);
-    return std::make_tuple(
-            std::move(prop_msg), std::move(hard_state), std::move(soft_state));
+    vec_value.push_back(value);
+    vec_reqid.push_back(reqid);
+    return SetValue(hard_state, vec_value, vec_reqid);
 }
 
 size_t RaftMem::CompactLog(uint64_t new_min_index)

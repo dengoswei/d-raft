@@ -73,20 +73,16 @@ public:
             const raft::ClusterConfig& commit_config, 
 			std::unique_ptr<raft::HardState> hard_state);
 
-    std::tuple<
-        std::unique_ptr<raft::Message>, 
-        std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>>
-            SetValue(
-                    const std::vector<std::string>& vec_value, 
-                    const std::vector<uint64_t>& vec_reqid);
+    int SetValue(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            const std::vector<std::string>& vec_value, 
+            const std::vector<uint64_t>& vec_reqid);
 
-    // prop_req msg, hs, sf, mk, rsp_msg_type
-    std::tuple<
-        std::unique_ptr<raft::Message>, 
-        std::unique_ptr<raft::HardState>, 
-        std::unique_ptr<raft::SoftState>>
-            SetValue(const std::string& value, uint64_t reqid);
+    int SetValue(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            const std::string& value, 
+            uint64_t reqid);
+
 
     // : 
     // servers process incoming RPC requests without consulting 
