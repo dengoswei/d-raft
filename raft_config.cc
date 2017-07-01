@@ -16,11 +16,11 @@ void RaftConfig::Apply(
 {
     {
         // check
-        uint64_t index = 0;
+        uint64_t at_index = 0;
         for (int idx = 0; idx < soft_state.configs_size(); ++idx) {
             const auto& config = soft_state.configs(idx);
-            assert(index < config.index());
-            index = config.index();
+            assert(at_index < config.at_index());
+            at_index = config.at_index();
         }
     }
 
@@ -41,7 +41,7 @@ void RaftConfig::Apply(
     }
 
     if (nullptr != new_config) {
-        if (new_config->index() <= commited_index) {
+        if (new_config->at_index() <= commited_index) {
             config_ = std::move(new_config);
             pending_ = nullptr; // must be force reset anyway
         }
@@ -51,21 +51,21 @@ void RaftConfig::Apply(
                 // more the 1..
                 int pidx = soft_state.configs_size() - 2;
                 assert(0 <= pidx);
-                assert(config_->index() < 
-                        soft_state.configs(pidx).index());
+                assert(config_->at_index() < 
+                        soft_state.configs(pidx).at_index());
                 config_ = cutils::make_unique<
                     raft::ClusterConfig>(soft_state.configs(pidx));
                 assert(nullptr != config_);
-                assert(config_->index() < new_config->index());
+                assert(config_->at_index() < new_config->at_index());
             }
             else {
                 // if nullptr != pending_; config_ = pending_
                 // pending_ = new_config
                 assert(1 == soft_state.configs_size());
                 if (nullptr != pending_) {
-                    assert(pending_->index() <= commited_index);
+                    assert(pending_->at_index() <= commited_index);
                     assert(nullptr != config_);
-                    assert(config_->index() < pending_->index());
+                    assert(config_->at_index() < pending_->at_index());
                     config_ = std::move(pending_);
                 }
                 // else => nothing change;
@@ -79,14 +79,14 @@ void RaftConfig::Apply(
 
     assert(nullptr == new_config);
     assert(nullptr != config_);
-    assert(config_->index() <= commited_index);
+    assert(config_->at_index() <= commited_index);
     if (nullptr != pending_) {
-        assert(pending_->index() > config_->index());
-        if (pending_->index() <= commited_index) {
+        assert(pending_->at_index() > config_->at_index());
+        if (pending_->at_index() <= commited_index) {
             config_ = std::move(pending_);
         }
 
-        assert(pending_->index() > commited_index);
+        assert(pending_->at_index() > commited_index);
     }
 }
 
@@ -94,7 +94,7 @@ const raft::ClusterConfig* RaftConfig::GetConfig() const
 {
     if (nullptr != pending_) {
         assert(nullptr != config_);
-        assert(pending_->index() > config_->index());
+        assert(pending_->at_index() > config_->at_index());
         return pending_.get();
     }
 
@@ -145,7 +145,7 @@ RaftConfig::Get(uint32_t peer, const raft::Node& def_node) const
 
 bool is_valid(const raft::ClusterConfig& config)
 {
-    assert(0 < config.index());
+    assert(0 < config.at_index());
     assert(0 < config.max_id());
     assert(2 <= config.nodes_size());
 

@@ -91,12 +91,13 @@ message Message {
 	optional bool        reject      = 12;
 	optional uint64      reject_hint = 13;
 
-    optional bool        disk_mark         = 14;
+    // optional bool        disk_mark         = 14;
 	optional uint32      prev_entries_size = 15;
 	optional bool        one_shot_mark     = 16;
 
     optional Node from_node = 17;
     repeated Node nodes = 18;
+    optional uint32      disk_svr = 19;
 }
 
 message SoftState {
@@ -125,8 +126,9 @@ message ConfState {
 }
 
 message ClusterConfig {
-    required uint64 index = 1;
-    required uint32 max_id = 2;
-    repeated Node nodes = 3;
+    required uint64 at_index = 1;
+    required uint64 at_term  = 2;
+    required uint32 max_id   = 3;
+    repeated Node   nodes    = 4;
 }
 

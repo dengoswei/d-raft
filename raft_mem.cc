@@ -24,6 +24,84 @@ enum {
 
 using namespace raft;
 
+
+
+bool check_endpoint_exist(
+        const raft::ClusterConfig& config, 
+        const raft::Node& new_node)
+{
+    std::set<std::pair<uint32_t, uint32_t>> unique;
+    for (int idx = 0; idx < config.nodes_size(); ++idx) {
+        const auto& node = config.nodes(idx);
+        unique.insert(std::make_pair(node.svr_ip(), node.svr_port()));
+    }
+
+    assert(unique.size() == static_cast<size_t>(config.nodes_size()));
+    return unique.end() != unique.find(
+            std::make_pair(new_node.svr_ip(), new_node.svr_port()));
+}
+
+bool check_svrid_exist(
+        const raft::ClusterConfig& config, uint32_t svrid)
+{
+    std::set<uint32_t> unique;
+    for (int idx = 0; idx < config.nodes_size(); ++idx) {
+        const auto& node = config.nodes(idx);
+        unique.insert(node.svr_id());
+    }
+
+    assert(unique.size() == static_cast<size_t>(config.nodes_size()));
+    return unique.end() != unique.find(svrid);
+}
+
+bool can_add_config(
+        raft::RaftMem& raft_mem, 
+        const std::unique_ptr<raft::SoftState>& soft_state, 
+        const raft::Node& new_node)
+{
+    if (nullptr != soft_state || 
+            raft_mem.GetRole() != raft::RaftRole::LEADER) {
+        return false;
+    }
+
+    assert(nullptr == soft_state);
+    if (nullptr != raft_mem.GetPendingConfig()) {
+        return false;
+    }
+
+    assert(nullptr != raft_mem.GetConfig());
+    if (check_endpoint_exist(*raft_mem.GetConfig(), new_node)) {
+        return false;
+    }
+
+    return true;
+}
+
+bool can_del_config(
+        raft::RaftMem& raft_mem, 
+        const std::unique_ptr<raft::SoftState>& soft_state, 
+        const raft::Node& del_node)
+{
+    if (nullptr != soft_state || 
+            raft_mem.GetRole() != raft::RaftRole::LEADER) {
+        return false;
+    }
+
+    assert(nullptr == soft_state);
+    if (nullptr != raft_mem.GetPendingConfig()) {
+        return false;
+    }
+
+    assert(nullptr != raft_mem.GetConfig());
+    if (false == check_endpoint_exist(
+                *raft_mem.GetConfig(), del_node)) {
+        return false;
+    }
+
+    return 3 <= raft_mem.GetConfig()->nodes_size();
+}
+
+
 void process_entry(
         const raft::Entry& entry, 
         std::unique_ptr<raft::SoftState>& soft_state)
@@ -41,13 +119,13 @@ void process_entry(
     if (0 < soft_state->configs_size()) {
         int fidx = soft_state->configs_size() - 1;
         assert(0 <= fidx);
-        assert(entry.index() > soft_state->configs(fidx).index());
+        assert(entry.index() > soft_state->configs(fidx).at_index());
     }
 
     auto new_config = soft_state->add_configs();
     assert(nullptr != new_config);
     assert(new_config->ParseFromString(entry.data()));
-    assert(new_config->index() == entry.index());
+    assert(new_config->at_index() == entry.index());
 }
 
 
@@ -642,7 +720,7 @@ onStepMessage(
                     const auto& entry = msg.entries(app_idx);
                     const auto pending_config = raft_mem.GetPendingConfig();
                     if (nullptr != pending_config && 
-                            pending_config->index() > entry.index()) {
+                            pending_config->at_index() > entry.index()) {
                         if (nullptr == soft_state) {
                             soft_state = 
                                 cutils::make_unique<raft::SoftState>();
@@ -832,10 +910,6 @@ onNewBuildRsp(
 				reject_hint = std::min(reject_hint, req_msg.index() - 1);
 				rsp_msg->set_reject_hint(reject_hint);
             }
-
-            if (req_msg.has_disk_mark() && req_msg.disk_mark()) {
-                rsp_msg->set_disk_mark(true);
-            }
         }
         break;
     
@@ -853,12 +927,13 @@ onNewBuildRsp(
         rsp_msg->set_to(req_msg.from());
         rsp_msg->set_from(raft_mem.GetSelfId());
         rsp_msg->set_term(raft_state.GetTerm());
-        if (req_msg.disk_mark()) {
-            rsp_msg->set_disk_mark(true);
-        }
-
+        
         if (req_msg.one_shot_mark()) {
             rsp_msg->set_one_shot_mark(true);
+        }
+
+        if (req_msg.has_disk_svr()) {
+            rsp_msg->set_disk_svr(req_msg.disk_svr());
         }
     }
 
@@ -1244,7 +1319,8 @@ onSetConfig(
         assert(nullptr != hard_state);
     }
 
-    new_config.set_index(raft_state.GetMaxIndex() + 1);
+    new_config.set_at_index(raft_state.GetMaxIndex() + 1);
+    new_config.set_at_term(raft_state.GetTerm());
     std::string conf_data;
     if (false == new_config.SerializeToString(&conf_data)) {
         return false;
@@ -1259,7 +1335,8 @@ onSetConfig(
     new_entry->set_index(max_index + 1);
     new_entry->set_reqid(0);
     new_entry->set_data(conf_data.data(), conf_data.size());
-    assert(new_entry->index() == new_config.index());
+    assert(new_entry->index() == new_config.at_index());
+    assert(new_entry->term() == new_config.at_term());
 
     auto meta = hard_state->mutable_meta();
     assert(nullptr != meta);
@@ -2309,7 +2386,7 @@ int RaftMem::Init(
         auto new_config = soft_state->add_configs();
         assert(nullptr != new_config);
         *new_config = commit_config;
-        config_->Apply(*soft_state, commit_config.index());
+        config_->Apply(*soft_state, commit_config.at_index());
     }
 
     std::unique_ptr<raft::SoftState> soft_state;
@@ -2320,8 +2397,8 @@ int RaftMem::Init(
         if (raft::EntryType::EntryConfChange == entry.type()) {
             auto cluster_config = config_->GetConfig();
             assert(nullptr != cluster_config);
-            assert(commit_config.index() == cluster_config->index());
-            if (cluster_config->index() < entry.index()) {
+            assert(commit_config.at_index() == cluster_config->at_index());
+            if (cluster_config->at_index() < entry.index()) {
                 process_entry(entry, soft_state);
             }
         }
@@ -2335,12 +2412,12 @@ int RaftMem::Init(
     UpdateActiveTime();
     assert(nullptr != config_->GetConfig());
     assert(nullptr != config_->GetCommitConfig());
-    assert(config_->GetCommitConfig()->index() <= GetCommit());
+    assert(config_->GetCommitConfig()->at_index() <= GetCommit());
     assert(GetMinIndex() <= GetCommit());
     assert(GetCommit() <= GetMaxIndex());
     if (nullptr != config_->GetPendingConfig()) {
-        assert(config_->GetPendingConfig()->index() > GetCommit());
-        assert(config_->GetPendingConfig()->index() <= GetMaxIndex());
+        assert(config_->GetPendingConfig()->at_index() > GetCommit());
+        assert(config_->GetPendingConfig()->at_index() <= GetMaxIndex());
     }
 
     // check map_progress_
@@ -2423,31 +2500,108 @@ RaftMem::SetValue(
     return SetValue(hard_state, vec_value, vec_reqid);
 }
 
+int RaftMem::AllocateSvrID(
+        std::unique_ptr<raft::HardState>& hard_state, 
+        std::unique_ptr<raft::SoftState>& soft_state, 
+        uint32_t& new_svr_id, 
+        uint64_t& allocate_at_term, 
+        uint64_t& allocate_at_index, 
+        const raft::Node& node_without_svrid)
+{
+    if (false == can_add_config(
+                *this, soft_state, node_without_svrid)) {
+        return -1;
+    }
+
+    assert(nullptr == soft_state);
+    assert(nullptr == GetPendingConfig());
+    assert(nullptr != GetConfig());
+ 
+    auto new_config = *GetConfig();
+    {
+        new_svr_id = GetConfig()->max_id() + 1;
+        new_config.set_max_id(new_svr_id);
+    }
+
+    if (false == leader::onSetConfig(
+                *this, hard_state, soft_state, new_config)) {
+        return -2;
+    }
+    
+    allocate_at_term = new_config.at_term();
+    allocate_at_index = new_config.at_index();
+    assert(nullptr != hard_state);
+    assert(nullptr != soft_state);
+    return 0;
+}
+
+int RaftMem::AddConfigWithAllocateSvrID(
+        std::unique_ptr<raft::HardState>& hard_state, 
+        std::unique_ptr<raft::SoftState>& soft_state, 
+        uint64_t allocate_at_term, 
+        uint64_t allocate_at_index, 
+        const raft::Node& node_with_allocate_svrid)
+{
+    assert(0 < node_with_allocate_svrid.svr_id());
+    if (false == can_add_config(
+                *this, soft_state, node_with_allocate_svrid)) {
+        return -1;
+    }
+
+    assert(nullptr != GetConfig());
+    uint32_t new_svrid = node_with_allocate_svrid.svr_id();
+    if (check_svrid_exist(*GetConfig(), new_svrid) || 
+            new_svrid != GetConfig()->max_id() || 
+            allocate_at_term != GetConfig()->at_term() || 
+            allocate_at_index != GetConfig()->at_index()) {
+        return -2;
+    }
+
+    auto new_config = *GetConfig();
+    {
+        auto node = new_config.add_nodes();
+        assert(nullptr != node);
+        *node = node_with_allocate_svrid;
+        assert(node->svr_id() == new_config.max_id());
+    }
+
+    if (false == leader::onSetConfig(
+                *this, hard_state, soft_state, new_config)) {
+        return -3;
+    }
+
+    assert(nullptr != hard_state);
+    assert(nullptr != soft_state);
+    assert(0 < new_config.at_index());
+    assert(0 < new_config.at_term());
+    return 0;
+}
+
 int RaftMem::AddConfig(
         std::unique_ptr<raft::HardState>& hard_state, 
         std::unique_ptr<raft::SoftState>& soft_state, 
         const raft::Node& new_node)
 {
     assert(0 < new_node.svr_id());
-    if (raft::RaftRole::LEADER != GetRole()) {
+    if (false == can_add_config(
+                *this, soft_state, new_node)) {
         return -1;
     }
-    
-    assert(raft::RaftRole::LEADER == GetRole());
-    if (IsMember(new_node.svr_id()) || 
-            nullptr != soft_state || 
-            nullptr != GetPendingConfig()) {
+
+    // check svr_id;
+    assert(nullptr != GetConfig());
+    if (check_svrid_exist(*GetConfig(), new_node.svr_id()) || 
+            new_node.svr_id() <= GetConfig()->max_id()) {
         return -2;
     }
 
-    assert(nullptr != GetConfig());
     auto new_config = *GetConfig();
     {
         auto node = new_config.add_nodes();
         assert(nullptr != node);
         *node = new_node;
-        new_config.set_max_id(
-                std::max(new_config.max_id(), new_node.svr_id()));
+        assert(new_node.svr_id() > new_config.max_id());
+        new_config.set_max_id(new_node.svr_id());
     }
 
     if (false == leader::onSetConfig(
@@ -2456,6 +2610,9 @@ int RaftMem::AddConfig(
     }
 
     assert(nullptr != hard_state);
+    assert(nullptr != soft_state);
+    assert(0 < new_config.at_index());
+    assert(0 < new_config.at_term());
     return 0;
 }
 
@@ -2465,21 +2622,13 @@ int RaftMem::DelConfig(
         const raft::Node& del_node)
 {
     assert(0 < del_node.svr_id());
-    if (raft::RaftRole::LEADER != GetRole()) {
+    if (false == can_del_config(
+                *this, soft_state, del_node)) {
         return -1;
     }
 
-    if (false == IsMember(del_node.svr_id()) || 
-            nullptr != soft_state || 
-            nullptr != GetPendingConfig()) {
-        return -2;
-    }
-
-    if (GetConfig()->nodes_size() <= 2) {
-        // can't del any more.. 
-        return -3;
-    }
-
+    assert(nullptr != GetConfig());
+    assert(3 <= GetConfig()->nodes_size());
     raft::ClusterConfig new_config;
     {
         auto cluster_config = GetConfig();
@@ -2497,7 +2646,6 @@ int RaftMem::DelConfig(
         }
 
         new_config.set_max_id(cluster_config->max_id());
-        new_config.set_index(0);
         assert(new_config.nodes_size() + 1 == 
                 cluster_config->nodes_size());
         assert(2 <= new_config.nodes_size());
@@ -2509,6 +2657,9 @@ int RaftMem::DelConfig(
     }
 
     assert(nullptr != hard_state);
+    assert(nullptr != soft_state);
+    assert(0 < new_config.at_index());
+    assert(0 < new_config.at_term());
     return 0;
 }
 

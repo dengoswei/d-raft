@@ -82,6 +82,28 @@ public:
             const std::string& value, 
             uint64_t reqid);
 
+    // CONFIG CHANGE:
+    // 1. allocate svr_id, return: svr_id, index, term; 
+    // 2. commit max_id; 
+    // 3. async catch up;
+    // 4. add node with pre-allocate svr_id;
+    // 5. commit node;
+
+    int AllocateSvrID(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            std::unique_ptr<raft::SoftState>& soft_state, 
+            uint32_t& new_svr_id, 
+            uint64_t& allocate_at_term, 
+            uint64_t& allocate_at_index, 
+            const raft::Node& node_without_svrid);
+
+    int AddConfigWithAllocateSvrID(
+            std::unique_ptr<raft::HardState>& hard_state, 
+            std::unique_ptr<raft::SoftState>& soft_state, 
+            uint64_t allocate_at_term, 
+            uint64_t allocate_at_index, 
+            const raft::Node& node_with_allocate_svrid);
+
     int AddConfig(
             std::unique_ptr<raft::HardState>& hard_state, 
             std::unique_ptr<raft::SoftState>& soft_state, 

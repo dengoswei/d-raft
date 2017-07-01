@@ -49,15 +49,14 @@ RaftDiskCatchUp::~RaftDiskCatchUp() = default;
 std::tuple<int, std::unique_ptr<raft::Message>, bool>
 RaftDiskCatchUp::Step(const raft::Message& msg)
 {
-    if (false == msg.has_disk_mark() || 
-            false == msg.disk_mark()) {
-        logerr("logid %" PRIu64 " from %u to %u missing disk_mark", 
+    if (false == msg.has_disk_svr()) {
+        logerr("logid %" PRIu64 " from %u to %u missing disk_svr", 
                 msg.logid(), msg.from(), msg.to());
         return std::make_tuple(-1, nullptr, false);
     }
 
-    assert(msg.has_disk_mark());
-    assert(msg.disk_mark());
+    assert(msg.has_disk_svr());
+    assert(msg.disk_svr() == selfid_);
     if (msg.term() != term_) {
         logerr("logid %" PRIu64 " msg.term %" PRIu64 " term_ %" PRIu64, 
                 msg.logid(), msg.term(), term_);
@@ -85,7 +84,7 @@ std::tuple<raft::MessageType, bool>
 RaftDiskCatchUp::step(const raft::Message& msg)
 {
 	assert(false == msg.one_shot_mark());
-	assert(true == msg.disk_mark());
+    assert(msg.has_disk_svr());
 	bool need_mem = false;
     auto rsp_msg_type = raft::MessageType::MsgNull;
     switch (msg.type())  {
@@ -197,7 +196,8 @@ RaftDiskCatchUp::buildRspMsg(
         rsp_msg->set_from(req_msg.to());
         rsp_msg->set_to(req_msg.from());
         rsp_msg->set_term(term_);
-        rsp_msg->set_disk_mark(true);
+
+        rsp_msg->set_disk_svr(rsp_msg->from());
     }
 
     return std::make_tuple(0, std::move(rsp_msg));
